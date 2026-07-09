@@ -112,9 +112,8 @@ function renderCompleted(applied: number, skipped: number): void {
   app().innerHTML = `
     <h2 class="title">Walkthrough complete</h2>
     <p>${applied} step(s) applied, ${skipped} skipped.</p>
-    <div class="actions"><button class="secondary" id="revert">Revert All</button></div>
+    <p class="review-note">Run “JustInTime: Revert All” from the Command Palette to undo every applied change.</p>
   `;
-  document.getElementById('revert')?.addEventListener('click', () => post({ type: 'openLocation', file: '', line: 0 }));
 }
 
 window.addEventListener('message', (e: MessageEvent<HostToWebview>) => {

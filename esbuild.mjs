@@ -17,7 +17,12 @@ const extensionConfig = {
   platform: 'node',
   format: 'cjs',
   target: 'node20',
-  external: ['vscode'],
+  // `vscode` is provided by the host. The Agent SDK ships and spawns a native
+  // `claude` binary that it locates relative to its own package directory, so it
+  // must be require()'d from node_modules at runtime rather than bundled (which
+  // would break that path resolution). Packaging must therefore include the SDK
+  // and its runtime deps in the .vsix.
+  external: ['vscode', '@anthropic-ai/claude-agent-sdk'],
   sourcemap: true,
   logLevel: 'info',
 };

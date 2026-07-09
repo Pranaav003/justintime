@@ -35,6 +35,10 @@
       {
         "command": "justintime.revertAll",
         "title": "JustInTime: Revert All"
+      },
+      {
+        "command": "justintime.setApiKey",
+        "title": "JustInTime: Set Anthropic API Key"
       }
     ],
     "configuration": {
@@ -106,6 +110,7 @@
     "vitest": "^2.1.8"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.205",
     "dompurify": "^3.4.11",
     "marked": "^18.0.6",
     "zod": "^4.4.3"
