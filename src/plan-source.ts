@@ -1,0 +1,26 @@
+import type { OutlineStep, WalkthroughOutline, HydratedStep } from './types';
+
+/**
+ * The model-provider seam (design Section 2.1). The orchestrator depends only on
+ * this interface, never on a concrete backend. MVP ships ClaudeAgentProvider;
+ * an AnthropicMessagesProvider / OpenAIProvider can be added later without
+ * touching the orchestrator or UI.
+ */
+
+export interface RepoContext {
+  /** Absolute workspace root, used as the analysis cwd. */
+  workspaceRoot: string;
+}
+
+export interface SessionCtx {
+  /** Provider session id captured during produceOutline, used to resume for hydration. */
+  sessionId: string;
+}
+
+/** Current contents of the step's target file(s), keyed by workspace-relative path. */
+export type FileState = Record<string, string>;
+
+export interface PlanProvider {
+  produceOutline(problem: string, ctx: RepoContext): Promise<WalkthroughOutline>;
+  hydrateStep(step: OutlineStep, current: FileState, session: SessionCtx): Promise<HydratedStep>;
+}
