@@ -112,3 +112,9 @@ export interface HydratedStep extends HydratedStepPayload {
   /** Empty in MVP; populated by V2 interaction testing. */
   hazards: Hazard[];
 }
+
+/** Result of applying a step's change to the workspace (defined here to stay VS Code-free). */
+export type ApplyOutcome =
+  | { status: 'applied' }
+  | { status: 'conflict'; reason: string }
+  | { status: 'error'; message: string };

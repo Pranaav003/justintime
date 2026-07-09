@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { applyHunks } from './anchor';
-import type { HydratedStep } from './types';
+import type { HydratedStep, ApplyOutcome } from './types';
 
 /**
  * Editor Bridge (design Section 7): the only module that drives the VS Code
@@ -11,11 +11,6 @@ import type { HydratedStep } from './types';
  * Not unit-tested (importing `vscode` requires the extension host); covered by
  * the Task 11 E2E suite.
  */
-
-export type ApplyOutcome =
-  | { status: 'applied' }
-  | { status: 'conflict'; reason: string }
-  | { status: 'error'; message: string };
 
 export interface EditorBridgeConfig {
   highlightColor: string;
@@ -75,6 +70,16 @@ export class EditorBridge implements vscode.Disposable {
 
   private uriFor(relPath: string): vscode.Uri {
     return vscode.Uri.joinPath(vscode.Uri.file(this.workspaceRoot), relPath);
+  }
+
+  /** Current content of a workspace-relative file, or undefined if it does not exist. */
+  async readFile(relPath: string): Promise<string | undefined> {
+    try {
+      const doc = await vscode.workspace.openTextDocument(this.uriFor(relPath));
+      return doc.getText();
+    } catch {
+      return undefined;
+    }
   }
 
   /** Open + reveal + highlight the target range. startLine/endLine are 1-based, advisory. */
