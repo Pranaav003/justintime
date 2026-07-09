@@ -35,7 +35,7 @@ Four layers, single responsibility each.
 
 | Layer | Technology | Responsibility |
 |---|---|---|
-| **AI Engine** | `@anthropic-ai/claude-agent-sdk` (`query()`) | Read-only codebase analysis; produce a walkthrough **outline**; on demand, **hydrate** one step's anchored diff against current file state; answer mid-step questions (session `resume`). |
+| **AI Engine** | `PlanProvider` seam; MVP impl = `@anthropic-ai/claude-agent-sdk` (`query()`) | Read-only codebase analysis; produce a walkthrough **outline**; on demand, **hydrate** one step's anchored diff against current file state; answer mid-step questions (session `resume`). Model provider is swappable (Section 2.1) — built for Claude, others pluggable. |
 | **Orchestrator** | TypeScript (extension host) | Step state machine, sequencing, lazy-hydration scheduling, conflict gating, rollback bookkeeping. **PlanSource** abstraction (seam for V2 tournament). |
 | **UI Layer** | VS Code Webview | Explanation panel, progress, action buttons, message contract (with ACKs), sanitized markdown, CSP/nonce. |
 | **Editor Bridge** | VS Code Extension API | Open/scroll/reveal, decoration lifecycle, native diff editor, `WorkspaceEdit` apply, scoped file watching with self-edit suppression. |
@@ -65,6 +65,24 @@ const READONLY = {
 - **No file contents embedded in the outline** (SDK guidance): outline references files + line ranges; the extension reads bytes itself.
 - **Auth:** SDK inherits local credential resolution automatically. On activation, if a probe `query` fails auth, prompt for `ANTHROPIC_API_KEY` → `context.secrets.store('justintime.anthropicApiKey', …)` and inject into the child env. Never build a claude.ai-login flow.
 - **Timeouts:** outline > 120 s → "Still working…"; > 300 s → offer cancel (`AbortController`). Hydration has a shorter budget (per-step, ~60 s).
+
+---
+
+### 2.1 Model provider abstraction (seam; MVP = Claude only)
+
+JustInTime is **built for Claude** but the model is swappable behind a `PlanProvider` interface, so an Anthropic-Messages-API / OpenAI / other backend can be added without touching the orchestrator or UI.
+
+```ts
+interface PlanProvider {
+  produceOutline(problem: string, ctx: RepoContext): Promise<WalkthroughOutline>;
+  hydrateStep(step: OutlineStep, current: FileState, session: SessionCtx): Promise<HydratedStep>;
+  answerQuestion?(question: string, session: SessionCtx): AsyncIterable<string>;   // V2 Q&A
+}
+```
+
+- **MVP: `ClaudeAgentProvider`** (default, first-class) wraps `@anthropic-ai/claude-agent-sdk` `query()`. Claude is the only provider that gets the read-only exploration tools (Read/Glob/Grep), structured output, and session resume **for free** from the SDK — that is precisely why the product is "meant for Claude."
+- **Future providers** (`AnthropicMessagesProvider` on the raw Messages API, `OpenAIProvider` for GPT, etc.) implement the same interface but must supply their own small **codebase-tools adapter** (glob/grep/read tool-loop) plus JSON-mode/function-calling for structured output. The outline/hydration **prompts and JSON schemas are provider-independent** — only the transport + tool-loop differ — so this is a genuinely thin seam.
+- Selected via setting `justintime.provider` (default `claude-agent-sdk`). MVP ships only `claude-agent-sdk`; the others are documented, not built.
 
 ---
 
@@ -210,7 +228,23 @@ Per the scope decision, MVP is linear but leaves clean seams; this section is th
 
 ---
 
-## 13. Testing
+## 13. Delivery surfaces: the extension is the shell; a plugin/skill is a text-native companion
+
+**The full product must be a VS Code extension.** Custom webview panels, the gated "Apply & Next" button, editor navigation/scroll/reveal, decoration highlights, and the native diff editor are **exclusively `vscode.*` Extension-API capabilities.** A Claude Code **plugin** (a `plugin.json` manifest bundling skills / subagents / hooks / MCP servers / LSP servers / commands) and a Claude **skill** (instruction markdown + optional scripts) have **zero reach** into the VS Code API — they run inside Claude's agent loop as a separate OS process. Neither can deliver JustInTime's core UX on its own. *(Confirmed against current Claude Code plugin/skill capabilities.)*
+
+What a plugin/skill *can* deliver is a **text/chat-native subset** — same methodology, no rich UI:
+- `skills/jit-start` → `/jit-start <topic>` invokes a read-only `jit-planner` **subagent** that produces the outline in chat.
+- `skills/jit-next` → `/jit-next` hydrates the next step's diff against current file state, dual-explains it, applies via Claude's own Edit tool on confirmation.
+- `skills/jit-status` → text progress; step state in a scratch file. Gating is conversational (type the next command), not a button.
+- Value: runs JustInTime **outside VS Code** (CLI / web / CI) and shares the planner subagent + prompts with the extension.
+
+**Optional hybrid (V2/V3 seam) — MCP bridge:** the extension hosts a local MCP server (the same pattern Anthropic's built-in `ide` server uses — `127.0.0.1`, token in `~/.claude/ide/`) exposing editor-control tools (`jit_open_panel`, `jit_show_step`, `jit_highlight_range`, `jit_apply_diff`, `jit_advance_step`). A companion plugin bundles that server config + the skills; **Claude is the orchestration brain, the extension is the UI actuator, MCP is the IPC.** It degrades gracefully to text-native mode when the extension isn't running.
+
+**MVP = VS Code extension only.** The companion plugin/skill and the MCP bridge are documented seams, not MVP scope. To keep them cheap later, the MVP already factors the provider-independent prompts + the `PlanProvider`/planner logic so a plugin subagent can reuse them verbatim.
+
+---
+
+## 14. Testing
 
 - **Unit (no VS Code dep):** state-machine transitions; JSON-schema validation of outline/hydrated-step; **anchoring** (0/1/many matches, CRLF, trailing whitespace, multi-hunk); rollback ordering.
 - **Integration (mock VS Code API + fixture repos):** claude-bridge message handling incl. `error_max_structured_output_retries`; editor-bridge `WorkspaceEdit`/decoration/diff; conflict detection own-vs-external.
@@ -218,7 +252,7 @@ Per the scope decision, MVP is linear but leaves clean seams; this section is th
 
 ---
 
-## 14. Build & publish
+## 15. Build & publish
 
 - `@anthropic-ai/claude-agent-sdk` + `marked` + `dompurify` (+ `@types`), dev: `@types/vscode`, `typescript`, `esbuild`, test runner (vitest for unit/integration, `@vscode/test-electron` for E2E). ESM.
 - **Two esbuild bundles:** extension host (`--platform=node --external:vscode`) and webview (`--platform=browser`).
