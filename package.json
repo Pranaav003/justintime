@@ -99,11 +99,14 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:e2e": "node esbuild-e2e.mjs",
+    "test:e2e": "npm run build && npm run build:e2e && node dist-e2e/runTest.js"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.95.0",
+    "@vscode/test-electron": "^3.0.0",
     "esbuild": "^0.25.12",
     "jsdom": "^29.1.1",
     "typescript": "^5.7.2",

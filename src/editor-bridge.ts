@@ -162,7 +162,13 @@ export class EditorBridge implements vscode.Disposable {
     const edit = new vscode.WorkspaceEdit();
     edit.replace(uri, fullRange, res.text);
     const ok = await vscode.workspace.applyEdit(edit);
-    return ok ? { status: 'applied' } : { status: 'error', message: 'applyEdit returned false' };
+    if (!ok) {
+      return { status: 'error', message: 'applyEdit returned false' };
+    }
+    // Persist so the change lands on disk and stays consistent with the
+    // fs-based rollback store (the edit otherwise lives only in the buffer).
+    await doc.save();
+    return { status: 'applied' };
   }
 
   private async applyCreate(step: HydratedStep): Promise<ApplyOutcome> {

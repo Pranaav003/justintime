@@ -2,12 +2,27 @@ import * as vscode from 'vscode';
 import { Orchestrator } from './orchestrator';
 import { EditorBridge } from './editor-bridge';
 import { ExplanationPanel } from './webview/panel';
-import { RollbackStore } from './rollback-store';
+import { RollbackStore, type RevertResult } from './rollback-store';
 import { ClaudeAgentProvider } from './claude-bridge';
 import { makeClaudeQuery } from './sdk-adapter';
 import { VscodeSnapshotFs } from './vscode-snapshot-fs';
+import type { PlanProvider } from './plan-source';
+import type { SessionState } from './state-machine';
 
 const SECRET_KEY = 'justintime.anthropicApiKey';
+
+/** Builds the PlanProvider for a run. Swappable for E2E tests (fake provider, no network). */
+export type ProviderFactory = (maxSteps: number) => PlanProvider;
+
+/** Extension API returned from activate(); used by the E2E suite to drive the loop. */
+export interface JustInTimeApi {
+  setProviderFactory(factory: ProviderFactory): void;
+  start(problem: string): Promise<void>;
+  apply(): Promise<void>;
+  skip(): Promise<void>;
+  revertAll(): Promise<RevertResult>;
+  getState(): SessionState | undefined;
+}
 
 interface ActiveSession {
   orchestrator: Orchestrator;
@@ -17,39 +32,54 @@ interface ActiveSession {
 
 let session: ActiveSession | undefined;
 let extContext: vscode.ExtensionContext;
+let providerFactory: ProviderFactory = (maxSteps) => new ClaudeAgentProvider(makeClaudeQuery(), { maxSteps });
 
-export function activate(context: vscode.ExtensionContext): void {
+export function activate(context: vscode.ExtensionContext): JustInTimeApi {
   extContext = context;
   context.subscriptions.push(
-    vscode.commands.registerCommand('justintime.start', () => void startWalkthrough()),
+    vscode.commands.registerCommand('justintime.start', () => void startCommand()),
     vscode.commands.registerCommand('justintime.pause', () => session?.orchestrator.pause()),
     vscode.commands.registerCommand('justintime.resume', () => void session?.orchestrator.resume()),
     vscode.commands.registerCommand('justintime.skip', () => void session?.orchestrator.skip()),
-    vscode.commands.registerCommand('justintime.revertAll', () => void revertAll()),
+    vscode.commands.registerCommand('justintime.revertAll', () => void revertAllCommand()),
     vscode.commands.registerCommand('justintime.setApiKey', () => void setApiKey()),
   );
+
+  return {
+    setProviderFactory: (factory) => {
+      providerFactory = factory;
+    },
+    start: (problem) => runWalkthrough(problem),
+    apply: () => session?.orchestrator.apply() ?? Promise.resolve(),
+    skip: () => session?.orchestrator.skip() ?? Promise.resolve(),
+    revertAll: () =>
+      session?.orchestrator.revertAll() ?? Promise.resolve({ restored: 0, deleted: 0, errors: [] }),
+    getState: () => session?.orchestrator.getState(),
+  };
 }
 
 export function deactivate(): void {
   disposeSession();
 }
 
-async function startWalkthrough(): Promise<void> {
+async function startCommand(): Promise<void> {
+  const problem = await vscode.window.showInputBox({
+    prompt: 'Describe the code problem for JustInTime to walk you through',
+    placeHolder: 'e.g. Fix the race condition in the checkout flow',
+    ignoreFocusOut: true,
+  });
+  if (problem) {
+    await runWalkthrough(problem);
+  }
+}
+
+async function runWalkthrough(problem: string): Promise<void> {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) {
     void vscode.window.showErrorMessage('JustInTime requires an open workspace folder.');
     return;
   }
   const workspaceRoot = folders[0]!.uri.fsPath;
-
-  const problem = await vscode.window.showInputBox({
-    prompt: 'Describe the code problem for JustInTime to walk you through',
-    placeHolder: 'e.g. Fix the race condition in the checkout flow',
-    ignoreFocusOut: true,
-  });
-  if (!problem) {
-    return;
-  }
 
   await applyStoredApiKey();
 
@@ -68,8 +98,7 @@ async function startWalkthrough(): Promise<void> {
     extContext.globalStorageUri.fsPath,
     globalThis.crypto.randomUUID(),
   );
-  const provider = new ClaudeAgentProvider(makeClaudeQuery(), { maxSteps });
-  const orchestrator = new Orchestrator(provider, editor, panel, rollback, {
+  const orchestrator = new Orchestrator(providerFactory(maxSteps), editor, panel, rollback, {
     workspaceRoot,
     maxSteps,
     showPrerequisites,
@@ -86,7 +115,7 @@ async function startWalkthrough(): Promise<void> {
   await orchestrator.start(problem);
 }
 
-async function revertAll(): Promise<void> {
+async function revertAllCommand(): Promise<void> {
   if (!session) {
     void vscode.window.showInformationMessage('No active JustInTime walkthrough to revert.');
     return;
