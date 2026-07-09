@@ -101,10 +101,13 @@
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.95.0",
     "esbuild": "^0.25.12",
+    "jsdom": "^29.1.1",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
   },
   "dependencies": {
+    "dompurify": "^3.4.11",
+    "marked": "^18.0.6",
     "zod": "^4.4.3"
   }
 }
