@@ -155,6 +155,7 @@ async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<v
     workspaceRoot,
     maxSteps,
     showPrerequisites,
+    analysisTimeoutSeconds: config.get<number>('analysisTimeoutSeconds', 600),
   });
 
   session = { orchestrator, editor, panel };

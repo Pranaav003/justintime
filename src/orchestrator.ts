@@ -46,15 +46,18 @@ export interface OrchestratorOptions {
   workspaceRoot: string;
   maxSteps?: number;
   showPrerequisites?: boolean;
+  /** Hard-abort analysis/hydration after this many seconds. 0 = never (Cancel only). */
+  analysisTimeoutSeconds?: number;
 }
 
 function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Show "still working" after this long; hard-abort the query after the second. */
-const SOFT_TIMEOUT_MS = 120_000;
-const HARD_TIMEOUT_MS = 240_000;
+/** Show the "still working" nudge after this long (progress streams before then). */
+const SOFT_TIMEOUT_MS = 45_000;
+/** Default hard-abort ceiling; overridable via options (0 = never, rely on Cancel). */
+const DEFAULT_ANALYSIS_TIMEOUT_SEC = 600;
 
 function join(...parts: string[]): string {
   return parts.join('/').replace(/\/{2,}/g, '/');
@@ -80,16 +83,22 @@ export class Orchestrator {
     this.cancelled = false;
     this.timedOut = false;
     this.inflight = new AbortController();
+    const hardMs = (this.opts.analysisTimeoutSeconds ?? DEFAULT_ANALYSIS_TIMEOUT_SEC) * 1000;
     const soft = setTimeout(onSoft, SOFT_TIMEOUT_MS);
-    const hard = setTimeout(() => {
-      this.timedOut = true;
-      this.inflight?.abort();
-    }, HARD_TIMEOUT_MS);
+    const hard =
+      hardMs > 0
+        ? setTimeout(() => {
+            this.timedOut = true;
+            this.inflight?.abort();
+          }, hardMs)
+        : undefined;
     try {
       return await op(this.inflight.signal);
     } finally {
       clearTimeout(soft);
-      clearTimeout(hard);
+      if (hard) {
+        clearTimeout(hard);
+      }
     }
   }
 
