@@ -33,17 +33,28 @@ async function main(): Promise<void> {
     claudeExecutable: process.env.JIT_SMOKE_CLAUDE || undefined,
   });
 
-  console.log('=== produceOutline (real Claude) ===');
+  const wtMode = process.env.JIT_SMOKE_WT_MODE === 'explain' ? 'explain' : 'solve';
+  console.log(`=== produceOutline (real Claude, mode=${wtMode}) ===`);
   const t0 = Date.now();
-  const outline = await provider.produceOutline(
-    'Guard average() against an empty array so it returns 0 instead of NaN.',
-    { workspaceRoot: dir },
-  );
+  const problem =
+    wtMode === 'explain'
+      ? 'How does average() compute its result, and what happens when the input array is empty?'
+      : 'Guard average() against an empty array so it returns 0 instead of NaN.';
+  const outline = await provider.produceOutline(problem, { workspaceRoot: dir, mode: wtMode });
   console.log(`(${((Date.now() - t0) / 1000).toFixed(1)}s)`);
-  console.log('sessionId:', outline.sessionId);
+  console.log('sessionId:', outline.sessionId, '| mode:', outline.mode);
   console.log('summary:', outline.problemSummary);
   for (const s of outline.steps) {
-    console.log(`  [${s.stepNumber}] ${s.title} (${s.changeKind}) -> ${s.targetFiles.join(', ')}`);
+    const loc = s.focus ? ` @ ${s.focus.file}:${s.focus.startLine}-${s.focus.endLine}` : '';
+    console.log(`  [${s.stepNumber}] ${s.title} (${s.changeKind})${loc}`);
+  }
+
+  if (wtMode === 'explain') {
+    // Explain mode does not hydrate; verify steps carry a focus location.
+    const withFocus = outline.steps.filter((s) => s.focus).length;
+    console.log(`\n=== explain check ===\n${withFocus}/${outline.steps.length} steps have a focus location`);
+    console.log(withFocus > 0 ? 'SMOKE OK: explain outline produced focus-anchored steps.' : 'WARN: no focus locations');
+    return;
   }
 
   const step = outline.steps[0]!;

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { buildPanelHtml, makeNonce } from './html';
 import type { HostToWebview, WebviewToHost, StepView } from './protocol';
+import type { WalkthroughMode } from '../types';
 
 /**
  * Host side of the explanation panel. Owns the WebviewPanel lifecycle, injects
@@ -78,8 +79,8 @@ export class ExplanationPanel implements vscode.Disposable {
   notifyError(message: string): void {
     this.post({ type: 'error', message });
   }
-  notifyCompleted(applied: number, skipped: number): void {
-    this.post({ type: 'completed', applied, skipped });
+  notifyCompleted(applied: number, skipped: number, mode: WalkthroughMode): void {
+    this.post({ type: 'completed', applied, skipped, mode });
   }
 
   reveal(): void {

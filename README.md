@@ -14,9 +14,17 @@ Built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk). Unli
 
 - **The Claude Code CLI (`claude`) installed and authenticated.** JustInTime uses your existing `claude` login (or `ANTHROPIC_API_KEY`) and your installed CLI — it does not bundle a copy. Install from https://code.claude.com and run `claude` once to log in.
 
+## Two modes
+
+Pick explicitly — JustInTime never guesses whether you want changes:
+
+- **Solve** — proposes gated code changes, step by step (Apply / Skip each).
+- **Explain** — *read-only.* Walks you through the relevant code and explains it (concept + this codebase), with a **Next** button and no diffs. It cannot modify anything.
+
 ## Commands
 
-- **JustInTime: Start Walkthrough** — describe a problem and begin
+- **JustInTime: Start Walkthrough** — pick Solve or Explain, then describe your problem/question
+- **JustInTime: Explain (read-only)** / **JustInTime: Solve** — skip the picker
 - **Pause / Resume / Skip Step / Revert All**
 - **Set Anthropic API Key** — store a key in VS Code SecretStorage (only needed if you don't use a `claude` login)
 

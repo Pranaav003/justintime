@@ -1,4 +1,4 @@
-import type { OutlineStep, WalkthroughOutline, HydratedStep } from './types';
+import type { OutlineStep, WalkthroughOutline, HydratedStep, WalkthroughMode } from './types';
 
 /**
  * The model-provider seam (design Section 2.1). The orchestrator depends only on
@@ -10,6 +10,8 @@ import type { OutlineStep, WalkthroughOutline, HydratedStep } from './types';
 export interface RepoContext {
   /** Absolute workspace root, used as the analysis cwd. */
   workspaceRoot: string;
+  /** Which walkthrough to produce. Defaults to 'solve' when omitted. */
+  mode?: WalkthroughMode;
 }
 
 export interface SessionCtx {

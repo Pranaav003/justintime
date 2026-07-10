@@ -18,11 +18,16 @@ function outlineStep(n: number, file: string): OutlineStep {
 
 /** Provider returning a fixed 2-step outline; hydrates each with a hunk matching the fake file. */
 class FakeProvider implements PlanProvider {
-  async produceOutline(_problem: string, _ctx: RepoContext): Promise<WalkthroughOutline> {
+  async produceOutline(_problem: string, ctx: RepoContext): Promise<WalkthroughOutline> {
+    const mode = ctx.mode ?? 'solve';
     return {
       sessionId: 'sess-x',
       problemSummary: 'summary',
-      steps: [outlineStep(1, 'a.ts'), outlineStep(2, 'b.ts')],
+      mode,
+      steps: [outlineStep(1, 'a.ts'), outlineStep(2, 'b.ts')].map((s) => ({
+        ...s,
+        focus: { file: s.targetFiles[0]!, startLine: 2, endLine: 2 },
+      })),
     };
   }
   async hydrateStep(step: OutlineStep, _current: FileState, _s: SessionCtx): Promise<HydratedStep> {
@@ -66,7 +71,7 @@ class FakePanel implements PanelPort {
   applied: number[] = [];
   conflicts: { n: number; reason: string }[] = [];
   errors: string[] = [];
-  completed: { a: number; s: number }[] = [];
+  completed: { a: number; s: number; mode: string }[] = [];
   showBusy(m: string): void {
     this.busy.push(m);
   }
@@ -82,8 +87,8 @@ class FakePanel implements PanelPort {
   notifyError(m: string): void {
     this.errors.push(m);
   }
-  notifyCompleted(a: number, s: number): void {
-    this.completed.push({ a, s });
+  notifyCompleted(a: number, s: number, mode: string): void {
+    this.completed.push({ a, s, mode });
   }
   onMessage(h: (m: WebviewToHost) => void): void {
     this.handler = h;
@@ -149,7 +154,7 @@ describe('Orchestrator', () => {
     await orch.start('fix it');
     await panel.emit({ type: 'apply' });
     await panel.emit({ type: 'apply' });
-    expect(panel.completed).toEqual([{ a: 2, s: 0 }]);
+    expect(panel.completed).toEqual([{ a: 2, s: 0, mode: 'solve' }]);
     expect(orch.getState().status).toBe('completed');
   });
 
@@ -167,6 +172,24 @@ describe('Orchestrator', () => {
     expect(panel.conflicts).toHaveLength(1);
     expect(panel.conflicts[0]!.n).toBe(1);
     expect(orch.getState().phase).toBe('conflict');
+  });
+
+  it('explain mode: navigates to focus, advances on Next without applying anything', async () => {
+    const { orch, panel, editor } = build();
+    await orch.start('how does it work', 'explain');
+    expect(panel.rendered).toHaveLength(1);
+    expect(panel.rendered[0]!.mode).toBe('explain');
+    expect(orch.getState().phase).toBe('waiting_for_apply');
+    // navigated to the step's focus range (line 2), not just the file top
+    expect(editor.navigated.some((n) => n.file === 'a.ts' && n.startLine === 2)).toBe(true);
+
+    await panel.emit({ type: 'apply' }); // "Next"
+    expect(editor.applied).toHaveLength(0); // explain mode never applies
+    expect(panel.rendered.at(-1)!.stepNumber).toBe(2);
+
+    await panel.emit({ type: 'apply' });
+    expect(orch.getState().status).toBe('completed');
+    expect(panel.completed[0]).toEqual({ a: 2, s: 0, mode: 'explain' });
   });
 
   it('reverts all via the rollback store', async () => {

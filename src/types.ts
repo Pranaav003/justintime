@@ -7,6 +7,9 @@
 
 export type ChangeKind = 'edit' | 'create' | 'delete' | 'rename';
 
+/** Walkthrough mode: 'solve' proposes gated code changes; 'explain' is read-only. */
+export type WalkthroughMode = 'solve' | 'explain';
+
 /** Canonical step states (design Section 9). Single source of truth. */
 export type StepState =
   | 'pending'
@@ -48,9 +51,11 @@ export interface OutlineStep {
   specificExplanation: string;
   prerequisites?: string[];
   relatedFiles?: RelatedFile[];
+  /** Explain-mode only: the location this step discusses (navigation, no diff). */
+  focus?: StepNavigation;
 }
 
-/** The model's structured output for the outline phase (sessionId is attached by us). */
+/** The model's structured output for the outline phase (sessionId + mode attached by us). */
 export interface OutlinePayload {
   problemSummary: string;
   steps: OutlineStep[];
@@ -59,6 +64,7 @@ export interface OutlinePayload {
 export interface WalkthroughOutline extends OutlinePayload {
   /** SDK session id, used for lazy hydration + follow-up questions. */
   sessionId: string;
+  mode: WalkthroughMode;
 }
 
 /** A single edit region, located by surrounding context rather than absolute line numbers. */

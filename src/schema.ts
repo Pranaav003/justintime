@@ -29,16 +29,24 @@ const highlightRangeSchema = z.object({
   note: z.string(),
 });
 
+const stepNavigationSchema = z.object({
+  file: z.string().min(1),
+  startLine: z.number().int().positive(),
+  endLine: z.number().int().positive(),
+});
+
 export const OutlineStepSchema = z.object({
   stepNumber: z.number().int().positive(),
   title: z.string().min(1),
   targetFiles: z.array(z.string()).min(1),
   dependsOn: z.array(z.number().int().positive()).default([]),
-  changeKind: changeKindSchema,
+  // Optional with a default: solve-mode fills it; explain-mode steps omit it.
+  changeKind: changeKindSchema.default('edit'),
   genericExplanation: z.string().min(1),
   specificExplanation: z.string().min(1),
   prerequisites: z.array(z.string()).optional(),
   relatedFiles: z.array(relatedFileSchema).optional(),
+  focus: stepNavigationSchema.optional(),
 });
 
 export const OutlinePayloadSchema = z.object({
@@ -52,12 +60,6 @@ export const AnchoredHunkSchema = z.object({
   newText: z.string(),
   contextAfter: z.string(),
   advisoryStartLine: z.number().int().positive().optional(),
-});
-
-const stepNavigationSchema = z.object({
-  file: z.string().min(1),
-  startLine: z.number().int().positive(),
-  endLine: z.number().int().positive(),
 });
 
 const stepVerificationSchema = z.object({

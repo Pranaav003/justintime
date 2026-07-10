@@ -10,6 +10,7 @@ import { makeClaudeQuery } from './sdk-adapter';
 import { VscodeSnapshotFs } from './vscode-snapshot-fs';
 import type { PlanProvider } from './plan-source';
 import type { SessionState } from './state-machine';
+import type { WalkthroughMode } from './types';
 
 const SECRET_KEY = 'justintime.anthropicApiKey';
 
@@ -19,7 +20,7 @@ export type ProviderFactory = (maxSteps: number) => PlanProvider;
 /** Extension API returned from activate(); used by the E2E suite to drive the loop. */
 export interface JustInTimeApi {
   setProviderFactory(factory: ProviderFactory): void;
-  start(problem: string): Promise<void>;
+  start(problem: string, mode?: WalkthroughMode): Promise<void>;
   apply(): Promise<void>;
   skip(): Promise<void>;
   revertAll(): Promise<RevertResult>;
@@ -67,6 +68,8 @@ export function activate(context: vscode.ExtensionContext): JustInTimeApi {
   extContext = context;
   context.subscriptions.push(
     vscode.commands.registerCommand('justintime.start', () => void startCommand()),
+    vscode.commands.registerCommand('justintime.explain', () => void startCommand('explain')),
+    vscode.commands.registerCommand('justintime.solve', () => void startCommand('solve')),
     vscode.commands.registerCommand('justintime.pause', () => session?.orchestrator.pause()),
     vscode.commands.registerCommand('justintime.resume', () => void session?.orchestrator.resume()),
     vscode.commands.registerCommand('justintime.skip', () => void session?.orchestrator.skip()),
@@ -78,7 +81,7 @@ export function activate(context: vscode.ExtensionContext): JustInTimeApi {
     setProviderFactory: (factory) => {
       providerFactory = factory;
     },
-    start: (problem) => runWalkthrough(problem),
+    start: (problem, mode) => runWalkthrough(problem, mode ?? 'solve'),
     apply: () => session?.orchestrator.apply() ?? Promise.resolve(),
     skip: () => session?.orchestrator.skip() ?? Promise.resolve(),
     revertAll: () =>
@@ -91,18 +94,39 @@ export function deactivate(): void {
   disposeSession();
 }
 
-async function startCommand(): Promise<void> {
+async function startCommand(preselected?: WalkthroughMode): Promise<void> {
+  let mode = preselected;
+  if (!mode) {
+    const pick = await vscode.window.showQuickPick(
+      [
+        { label: '$(tools) Solve', description: 'Propose gated code changes, step by step', mode: 'solve' as const },
+        { label: '$(book) Explain', description: 'Read-only — walk through and explain the code, no changes', mode: 'explain' as const },
+      ],
+      { title: 'JustInTime', placeHolder: 'Choose a mode' },
+    );
+    if (!pick) {
+      return;
+    }
+    mode = pick.mode;
+  }
+
   const problem = await vscode.window.showInputBox({
-    prompt: 'Describe the code problem for JustInTime to walk you through',
-    placeHolder: 'e.g. Fix the race condition in the checkout flow',
+    prompt:
+      mode === 'explain'
+        ? 'What would you like JustInTime to explain?'
+        : 'Describe the code problem for JustInTime to solve',
+    placeHolder:
+      mode === 'explain'
+        ? 'e.g. How does the checkout flow handle concurrent updates?'
+        : 'e.g. Fix the race condition in the checkout flow',
     ignoreFocusOut: true,
   });
   if (problem) {
-    await runWalkthrough(problem);
+    await runWalkthrough(problem, mode);
   }
 }
 
-async function runWalkthrough(problem: string): Promise<void> {
+async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<void> {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) {
     void vscode.window.showErrorMessage('JustInTime requires an open workspace folder.');
@@ -141,7 +165,7 @@ async function runWalkthrough(problem: string): Promise<void> {
     }
   });
 
-  await orchestrator.start(problem);
+  await orchestrator.start(problem, mode);
 }
 
 async function revertAllCommand(): Promise<void> {

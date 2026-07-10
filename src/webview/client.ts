@@ -74,23 +74,29 @@ function renderView(view: StepView): void {
     .map((status, i) => `<span class="dot ${status}" data-step="${i + 1}" title="Step ${i + 1}"></span>`)
     .join('');
 
+  const explain = view.mode === 'explain';
   const actions = view.reviewMode
-    ? `<div class="review-note">Reviewing a completed step — read only.</div>`
-    : `<div class="actions">
-         <button class="primary" id="apply">Apply &amp; Next</button>
-         <button class="secondary" id="skip">Skip</button>
-         <button class="secondary" id="pause">Pause</button>
-       </div>`;
+    ? `<div class="review-note">Reviewing a previous step — read only.</div>`
+    : explain
+      ? `<div class="actions">
+           <button class="primary" id="apply">Next</button>
+           <button class="secondary" id="pause">Pause</button>
+         </div>`
+      : `<div class="actions">
+           <button class="primary" id="apply">Apply &amp; Next</button>
+           <button class="secondary" id="skip">Skip</button>
+           <button class="secondary" id="pause">Pause</button>
+         </div>`;
 
   app().innerHTML = `
-    <div class="progress">${dots}<span class="progress-label">Step ${stepNum} of ${totalSteps}</span></div>
+    <div class="progress">${dots}<span class="progress-label">Step ${stepNum} of ${totalSteps}${explain ? ' · Explain' : ''}</span></div>
     <h2 class="title">${escapeHtml(view.title)}</h2>
     <div class="location">📍 <a class="loc-link" data-file="${escapeHtml(view.locationFile)}" data-line="${locationLine}">${escapeHtml(view.locationLabel)}</a></div>
     <div class="section"><h3>What's happening</h3>${renderMarkdown(view.genericMarkdown)}</div>
     <div class="section"><h3>Why here</h3>${renderMarkdown(view.specificMarkdown)}</div>
     ${renderRelated(view)}
     ${renderPrereqs(view)}
-    ${renderDiff(view.diffHunks)}
+    ${explain ? '' : renderDiff(view.diffHunks)}
     ${actions}
   `;
 
@@ -114,9 +120,16 @@ function showBanner(message: string, kind: 'warn' | 'error'): void {
   app().prepend(banner);
 }
 
-function renderCompleted(applied: number, skipped: number): void {
+function renderCompleted(applied: number, skipped: number, mode: string): void {
   const appliedStr = String(Number(applied) | 0);
   const skippedStr = String(Number(skipped) | 0);
+  if (mode === 'explain') {
+    app().innerHTML = `
+      <h2 class="title">Explanation complete</h2>
+      <p>${appliedStr} step(s) reviewed, ${skippedStr} skipped.</p>
+    `;
+    return;
+  }
   app().innerHTML = `
     <h2 class="title">Walkthrough complete</h2>
     <p>${appliedStr} step(s) applied, ${skippedStr} skipped.</p>
@@ -143,7 +156,7 @@ window.addEventListener('message', (e: MessageEvent<HostToWebview>) => {
       showBanner(msg.message, 'error');
       break;
     case 'completed':
-      renderCompleted(msg.applied, msg.skipped);
+      renderCompleted(msg.applied, msg.skipped, msg.mode);
       break;
   }
 });

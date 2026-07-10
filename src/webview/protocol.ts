@@ -4,6 +4,8 @@
  * an unhandled message. Shared by panel.ts (host) and client.ts (webview).
  */
 
+import type { WalkthroughMode } from '../types';
+
 export type StepDotStatus = 'done' | 'skipped' | 'current' | 'upcoming';
 
 export interface DiffHunkView {
@@ -28,6 +30,7 @@ export interface StepView {
   reviewMode: boolean;
   showPrerequisites: boolean;
   dots: StepDotStatus[];
+  mode: WalkthroughMode;
 }
 
 export type HostToWebview =
@@ -36,7 +39,7 @@ export type HostToWebview =
   | { type: 'applied'; stepNumber: number }
   | { type: 'conflict'; stepNumber: number; reason: string }
   | { type: 'error'; message: string }
-  | { type: 'completed'; applied: number; skipped: number };
+  | { type: 'completed'; applied: number; skipped: number; mode: WalkthroughMode };
 
 export type WebviewToHost =
   | { type: 'ready' }

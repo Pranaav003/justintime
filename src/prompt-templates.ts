@@ -31,6 +31,22 @@ export function buildOutlinePrompt(problem: string, maxSteps: number): string {
   return `Problem to walk through:\n${problem}\n\nProduce an ordered outline of at most ${maxSteps} steps.`;
 }
 
+/** Appended to the preset for EXPLAIN mode — read-only, no code changes proposed. */
+export const EXPLAIN_SYSTEM_APPEND = `You are producing a JustInTime EXPLANATION walkthrough. This is READ-ONLY: you must NOT propose, describe, or plan any code change whatsoever.
+
+Rules:
+- Explore the codebase read-only (Read/Glob/Grep) before answering.
+- Decompose the explanation into the smallest meaningful ordered steps — one focused idea per step — that walk the reader through the relevant code to build understanding.
+- Each step MUST set "focus" to the exact location it discusses: { file (relative path), startLine, endLine } (1-based). This is where the editor will navigate; pick the smallest range that captures the idea.
+- genericExplanation: the general pattern/concept/language feature at play, taught to a competent developer new to this codebase; name it.
+- specificExplanation: how it works HERE — reference real function/variable names, call chains, and effects in this codebase.
+- Do NOT propose edits, fixes, or diffs. If the reader asked "how/why", answer by explaining the existing code, not by changing it.
+- Return ONLY the structured outline object.`;
+
+export function buildExplainPrompt(question: string, maxSteps: number): string {
+  return `Explain the following, walking through the relevant code:\n${question}\n\nProduce an ordered explanation of at most ${maxSteps} steps, each with a focus location. Propose no changes.`;
+}
+
 import type { OutlineStep } from './types';
 
 export function buildHydratePrompt(step: OutlineStep, currentFiles: Record<string, string>): string {

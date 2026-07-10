@@ -48,6 +48,22 @@ describe('parseOutlinePayload', () => {
     const bad = { ...validOutline, steps: [{ ...validOutline.steps[0], stepNumber: 0 }] };
     expect(() => parseOutlinePayload(bad)).toThrow();
   });
+
+  it('defaults changeKind to edit when omitted (explain-mode steps)', () => {
+    const step = { ...validOutline.steps[0] } as Record<string, unknown>;
+    delete step.changeKind;
+    const out = parseOutlinePayload({ ...validOutline, steps: [step] });
+    expect(out.steps[0]!.changeKind).toBe('edit');
+  });
+
+  it('accepts an explain-mode step with a focus range', () => {
+    const step = {
+      ...validOutline.steps[0],
+      focus: { file: 'src/checkout.ts', startLine: 10, endLine: 20 },
+    };
+    const out = parseOutlinePayload({ ...validOutline, steps: [step] });
+    expect(out.steps[0]!.focus).toEqual({ file: 'src/checkout.ts', startLine: 10, endLine: 20 });
+  });
 });
 
 const validEditStep = {

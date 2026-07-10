@@ -18,6 +18,7 @@ const fakeProvider: PlanProvider = {
     return {
       sessionId: 'e2e-session',
       problemSummary: 'Multiply price by quantity.',
+      mode: 'solve',
       steps: [
         {
           stepNumber: 1,

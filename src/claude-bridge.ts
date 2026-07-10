@@ -4,8 +4,10 @@ import { parseOutlinePayload, parseHydratedStep, outlineJsonSchema, hydratedStep
 import {
   OUTLINE_SYSTEM_APPEND,
   HYDRATE_SYSTEM_APPEND,
+  EXPLAIN_SYSTEM_APPEND,
   buildOutlinePrompt,
   buildHydratePrompt,
+  buildExplainPrompt,
 } from './prompt-templates';
 
 /**
@@ -80,9 +82,14 @@ export class ClaudeAgentProvider implements PlanProvider {
   }
 
   async produceOutline(problem: string, ctx: RepoContext): Promise<WalkthroughOutline> {
-    const result = await this.drain(buildOutlinePrompt(problem, this.maxSteps), {
+    const mode = ctx.mode ?? 'solve';
+    const append = mode === 'explain' ? EXPLAIN_SYSTEM_APPEND : OUTLINE_SYSTEM_APPEND;
+    const prompt =
+      mode === 'explain' ? buildExplainPrompt(problem, this.maxSteps) : buildOutlinePrompt(problem, this.maxSteps);
+
+    const result = await this.drain(prompt, {
       cwd: ctx.workspaceRoot,
-      systemPrompt: { type: 'preset', preset: 'claude_code', append: OUTLINE_SYSTEM_APPEND },
+      systemPrompt: { type: 'preset', preset: 'claude_code', append },
       allowedTools: READONLY_TOOLS,
       disallowedTools: BLOCKED_TOOLS,
       permissionMode: 'dontAsk',
@@ -95,7 +102,7 @@ export class ClaudeAgentProvider implements PlanProvider {
     if (!sessionId) {
       throw new ProviderError('SDK result did not include a session_id', 'no_session');
     }
-    return { ...payload, sessionId };
+    return { ...payload, sessionId, mode };
   }
 
   async hydrateStep(step: OutlineStep, current: FileState, session: SessionCtx): Promise<HydratedStep> {

@@ -1,6 +1,6 @@
 import { initialState, transition, type SessionState, type WalkthroughEvent } from './state-machine';
 import { applyHunks } from './anchor';
-import type { OutlineStep, WalkthroughOutline, HydratedStep, ApplyOutcome } from './types';
+import type { OutlineStep, WalkthroughOutline, HydratedStep, ApplyOutcome, WalkthroughMode } from './types';
 import type { PlanProvider, FileState } from './plan-source';
 import type { StepView, StepDotStatus, WebviewToHost, DiffHunkView } from './webview/protocol';
 import type { RevertResult } from './rollback-store';
@@ -27,7 +27,7 @@ export interface PanelPort {
   notifyApplied(stepNumber: number): void;
   notifyConflict(stepNumber: number, reason: string): void;
   notifyError(message: string): void;
-  notifyCompleted(applied: number, skipped: number): void;
+  notifyCompleted(applied: number, skipped: number, mode: WalkthroughMode): void;
   onMessage(handler: (msg: WebviewToHost) => void): void;
 }
 
@@ -54,6 +54,7 @@ function join(...parts: string[]): string {
 export class Orchestrator {
   private state: SessionState = initialState();
   private outline?: WalkthroughOutline;
+  private mode: WalkthroughMode = 'solve';
   private readonly hydratedByStep = new Map<number, HydratedStep>();
   private readonly beforeTextByStep = new Map<number, string>();
   private readonly stepStatus = new Map<number, 'done' | 'skipped'>();
@@ -73,17 +74,18 @@ export class Orchestrator {
     return this.state;
   }
 
-  async start(problem: string): Promise<void> {
+  async start(problem: string, mode: WalkthroughMode = 'solve'): Promise<void> {
     if (!this.registered) {
       // Return the promise so hosts/tests that care can await it; the real
       // webview host ignores the return value.
       this.panel.onMessage((m) => this.handleMessage(m));
       this.registered = true;
     }
-    this.panel.showBusy('Analyzing your codebase…');
+    this.mode = mode;
+    this.panel.showBusy(mode === 'explain' ? 'Reading your codebase…' : 'Analyzing your codebase…');
     let outline: WalkthroughOutline;
     try {
-      outline = await this.provider.produceOutline(problem, { workspaceRoot: this.opts.workspaceRoot });
+      outline = await this.provider.produceOutline(problem, { workspaceRoot: this.opts.workspaceRoot, mode });
     } catch (e) {
       this.panel.notifyError(`Analysis failed: ${errMsg(e)}`);
       return;
@@ -117,9 +119,12 @@ export class Orchestrator {
    */
   private renderCurrentAfterInterrupt(): void {
     const step = this.currentOutlineStep();
-    const hydrated = step && this.hydratedByStep.get(step.stepNumber);
-    if (!step || !hydrated) {
+    if (!step) {
       return;
+    }
+    const hydrated = this.hydratedByStep.get(step.stepNumber);
+    if (this.mode === 'solve' && !hydrated) {
+      return; // solve mode needs a hydrated diff to render
     }
     if (this.state.phase === 'explaining' && !this.dispatch({ type: 'SHOW_READY' })) {
       return;
@@ -143,6 +148,10 @@ export class Orchestrator {
   private async activateCurrentStep(): Promise<void> {
     const step = this.currentOutlineStep();
     if (!step) {
+      return;
+    }
+    if (this.mode === 'explain') {
+      await this.activateExplainStep(step);
       return;
     }
     // Coarse navigation to the target file while we hydrate.
@@ -227,7 +236,7 @@ export class Orchestrator {
     this.panel.renderStep(this.buildView(step, hydrated, false));
   }
 
-  private buildView(step: OutlineStep, hydrated: HydratedStep, reviewMode: boolean): StepView {
+  private buildView(step: OutlineStep, hydrated: HydratedStep | undefined, reviewMode: boolean): StepView {
     const total = this.outline!.steps.length;
     const dots: StepDotStatus[] = Array.from({ length: total }, (_unused, i): StepDotStatus => {
       const n = i + 1;
@@ -241,9 +250,13 @@ export class Orchestrator {
       return n === this.state.currentStep ? 'current' : 'upcoming';
     });
 
-    const nav = hydrated.navigation;
+    const nav = hydrated?.navigation ??
+      step.focus ?? { file: step.targetFiles[0] ?? '', startLine: 1, endLine: 1 };
+
     let diffHunks: DiffHunkView[];
-    if (hydrated.changeKind === 'edit') {
+    if (!hydrated) {
+      diffHunks = []; // explain mode: no diff
+    } else if (hydrated.changeKind === 'edit') {
       diffHunks = (hydrated.hunks ?? []).map((h) => ({ oldText: h.oldText, newText: h.newText }));
     } else if (hydrated.changeKind === 'create') {
       diffHunks = [{ oldText: '', newText: hydrated.fullFileContent ?? '' }];
@@ -264,12 +277,30 @@ export class Orchestrator {
       specificMarkdown: step.specificExplanation,
       prerequisites: step.prerequisites ?? [],
       relatedFiles: step.relatedFiles ?? [],
-      changeKind: hydrated.changeKind,
+      changeKind: hydrated?.changeKind ?? 'explain',
       diffHunks,
       reviewMode,
       showPrerequisites: this.opts.showPrerequisites ?? true,
       dots,
+      mode: this.mode,
     };
+  }
+
+  /** Explain mode: navigate to the step's focus and render explanation-only (no diff). */
+  private async activateExplainStep(step: OutlineStep): Promise<void> {
+    const nav = step.focus ?? { file: step.targetFiles[0] ?? '', startLine: 1, endLine: 1 };
+    await this.editor.navigateTo(nav.file, nav.startLine, nav.endLine);
+    if (!this.dispatch({ type: 'NAV_DONE' })) {
+      return;
+    }
+    // No diff to hydrate — go straight through to the interactive state.
+    if (!this.dispatch({ type: 'HYDRATE_DONE' })) {
+      return;
+    }
+    if (!this.dispatch({ type: 'SHOW_READY' })) {
+      return;
+    }
+    this.panel.renderStep(this.buildView(step, undefined, false));
   }
 
   private async handleMessage(msg: WebviewToHost): Promise<void> {
@@ -303,8 +334,21 @@ export class Orchestrator {
       return;
     }
     const step = this.currentOutlineStep();
-    const hydrated = step && this.hydratedByStep.get(step.stepNumber);
-    if (!step || !hydrated) {
+    if (!step) {
+      return;
+    }
+    if (this.mode === 'explain') {
+      // "Next" in explain mode: nothing to apply — just advance through the flow.
+      if (!this.dispatch({ type: 'APPLY' }) || !this.dispatch({ type: 'APPLY_DONE' })) {
+        return;
+      }
+      this.stepStatus.set(step.stepNumber, 'done');
+      this.appliedCount++;
+      await this.advance();
+      return;
+    }
+    const hydrated = this.hydratedByStep.get(step.stepNumber);
+    if (!hydrated) {
       return;
     }
     if (!this.dispatch({ type: 'APPLY' })) {
@@ -352,7 +396,7 @@ export class Orchestrator {
     }
     this.editor.clearHighlights();
     if (this.state.status === 'completed') {
-      this.panel.notifyCompleted(this.appliedCount, this.skippedCount);
+      this.panel.notifyCompleted(this.appliedCount, this.skippedCount, this.mode);
       return;
     }
     await this.activateCurrentStep();
@@ -375,10 +419,14 @@ export class Orchestrator {
       return;
     }
     const step = this.outline?.steps[n - 1];
-    const hydrated = this.hydratedByStep.get(n);
-    if (step && hydrated) {
-      this.panel.renderStep(this.buildView(step, hydrated, true));
+    if (!step) {
+      return;
     }
+    const hydrated = this.hydratedByStep.get(n);
+    if (this.mode === 'solve' && !hydrated) {
+      return;
+    }
+    this.panel.renderStep(this.buildView(step, hydrated, true));
   }
 
   private async openLocation(file: string, line: number): Promise<void> {
