@@ -163,7 +163,10 @@ export class Orchestrator {
 
     let hydrated: HydratedStep;
     try {
-      hydrated = await this.provider.hydrateStep(step, current, { sessionId: this.outline!.sessionId });
+      hydrated = await this.provider.hydrateStep(step, current, {
+        sessionId: this.outline!.sessionId,
+        workspaceRoot: this.opts.workspaceRoot,
+      });
     } catch (e) {
       this.dispatch({ type: 'HYDRATE_FAILED', message: errMsg(e) });
       this.panel.notifyError(`Could not prepare step ${step.stepNumber}: ${errMsg(e)}`);

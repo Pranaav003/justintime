@@ -31,15 +31,21 @@ export function buildOutlinePrompt(problem: string, maxSteps: number): string {
   return `Problem to walk through:\n${problem}\n\nProduce an ordered outline of at most ${maxSteps} steps.`;
 }
 
-export function buildHydratePrompt(
-  stepNumber: number,
-  stepTitle: string,
-  changeKind: string,
-  currentFiles: Record<string, string>,
-): string {
+import type { OutlineStep } from './types';
+
+export function buildHydratePrompt(step: OutlineStep, currentFiles: Record<string, string>): string {
   const files = Object.entries(currentFiles)
     .map(([path, content]) => `--- BEGIN ${path} (current content) ---\n${content}\n--- END ${path} ---`)
     .join('\n\n');
   const body = files || '(No existing file content supplied; this is likely a create step.)';
-  return `Hydrate step ${stepNumber}: "${stepTitle}" (changeKind: ${changeKind}).\n\n${body}`;
+  // Hydration is a stateless query (session resume is unreliable across SDK/
+  // gateway versions), so restate the step's intent from the outline here.
+  return (
+    `Hydrate this walkthrough step into a concrete change.\n\n` +
+    `Step ${step.stepNumber}: ${step.title}\n` +
+    `Change kind: ${step.changeKind}\n` +
+    `What this step does (general): ${step.genericExplanation}\n` +
+    `Why here (specific): ${step.specificExplanation}\n\n` +
+    body
+  );
 }

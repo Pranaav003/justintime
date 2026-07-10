@@ -71,7 +71,7 @@ describe('produceOutline', () => {
     await new ClaudeAgentProvider(fn).produceOutline('p', ctx);
     const opts = calls[0]!.options;
     expect(opts.allowedTools).toEqual(['Read', 'Glob', 'Grep']);
-    expect(opts.disallowedTools).toEqual(expect.arrayContaining(['Write', 'Edit', 'MultiEdit', 'Bash']));
+    expect(opts.disallowedTools).toEqual(expect.arrayContaining(['Write', 'Edit', 'Bash']));
     expect(opts.permissionMode).toBe('dontAsk');
     expect(opts.cwd).toBe('/repo');
     expect((opts.outputFormat as { type: string }).type).toBe('json_schema');
@@ -100,11 +100,12 @@ describe('hydrateStep', () => {
       { type: 'result', subtype: 'success', structured_output: validHydratedPayload, session_id: 'sess-1' },
     ]);
     const provider = new ClaudeAgentProvider(fn);
-    const step = await provider.hydrateStep(outlineStep, { 'src/checkout.ts': 'function checkout() {\n  cart.total += p;\n}' }, { sessionId: 'sess-1' });
+    const step = await provider.hydrateStep(outlineStep, { 'src/checkout.ts': 'function checkout() {\n  cart.total += p;\n}' }, { sessionId: 'sess-1', workspaceRoot: '/repo' });
     expect(step.hazards).toEqual([]);
     expect(step.hunks).toHaveLength(1);
     const opts = calls[0]!.options;
-    expect(opts.resume).toBe('sess-1');
+    expect(opts.resume).toBeUndefined(); // stateless hydration — no session resume
+    expect(opts.cwd).toBe('/repo');
     expect((opts.outputFormat as { type: string }).type).toBe('json_schema');
   });
 
@@ -112,7 +113,7 @@ describe('hydrateStep', () => {
     const { fn, calls } = fakeQuery([
       { type: 'result', subtype: 'success', structured_output: validHydratedPayload, session_id: 'sess-1' },
     ]);
-    await new ClaudeAgentProvider(fn).hydrateStep(outlineStep, { 'src/checkout.ts': 'UNIQUE_MARKER_XYZ' }, { sessionId: 'sess-1' });
+    await new ClaudeAgentProvider(fn).hydrateStep(outlineStep, { 'src/checkout.ts': 'UNIQUE_MARKER_XYZ' }, { sessionId: 'sess-1', workspaceRoot: '/repo' });
     expect(calls[0]!.prompt).toContain('UNIQUE_MARKER_XYZ');
     expect(calls[0]!.prompt).toContain('src/checkout.ts');
   });
@@ -121,7 +122,7 @@ describe('hydrateStep', () => {
     const bad = { ...validHydratedPayload, hunks: [] };
     const { fn } = fakeQuery([{ type: 'result', subtype: 'success', structured_output: bad, session_id: 'sess-1' }]);
     await expect(
-      new ClaudeAgentProvider(fn).hydrateStep(outlineStep, {}, { sessionId: 'sess-1' }),
+      new ClaudeAgentProvider(fn).hydrateStep(outlineStep, {}, { sessionId: 'sess-1', workspaceRoot: '/repo' }),
     ).rejects.toMatchObject({ code: 'invalid_output' });
   });
 });

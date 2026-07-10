@@ -45,20 +45,30 @@ export class ProviderError extends Error {
 }
 
 const READONLY_TOOLS = ['Read', 'Glob', 'Grep'];
-const BLOCKED_TOOLS = ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash'];
+// Known destructive tools removed from the model's context entirely. Anything
+// else is still denied by permissionMode 'dontAsk' (deny-if-not-pre-approved).
+const BLOCKED_TOOLS = ['Write', 'Edit', 'Bash'];
 
 export interface ClaudeAgentProviderOptions {
   maxSteps?: number;
+  /** Optional model override (blank = SDK/CLI default). For restricted keys/gateways. */
+  model?: string;
 }
 
 export class ClaudeAgentProvider implements PlanProvider {
   private readonly maxSteps: number;
+  private readonly model?: string;
 
   constructor(
     private readonly query: QueryFn,
     options: ClaudeAgentProviderOptions = {},
   ) {
     this.maxSteps = options.maxSteps ?? 30;
+    this.model = options.model;
+  }
+
+  private modelOption(): Record<string, unknown> {
+    return this.model ? { model: this.model } : {};
   }
 
   async produceOutline(problem: string, ctx: RepoContext): Promise<WalkthroughOutline> {
@@ -69,6 +79,7 @@ export class ClaudeAgentProvider implements PlanProvider {
       disallowedTools: BLOCKED_TOOLS,
       permissionMode: 'dontAsk',
       outputFormat: { type: 'json_schema', schema: outlineJsonSchema() },
+      ...this.modelOption(),
     });
 
     const payload = this.parse(result, parseOutlinePayload);
@@ -81,14 +92,17 @@ export class ClaudeAgentProvider implements PlanProvider {
 
   async hydrateStep(step: OutlineStep, current: FileState, session: SessionCtx): Promise<HydratedStep> {
     const result = await this.drain(
-      buildHydratePrompt(step.stepNumber, step.title, step.changeKind, current),
+      buildHydratePrompt(step, current),
       {
-        resume: session.sessionId,
+        // Stateless per-step query (no session resume — unreliable across SDK/
+        // gateway versions). The prompt carries the step intent + current file.
+        cwd: session.workspaceRoot,
         systemPrompt: { type: 'preset', preset: 'claude_code', append: HYDRATE_SYSTEM_APPEND },
         allowedTools: READONLY_TOOLS,
         disallowedTools: BLOCKED_TOOLS,
         permissionMode: 'dontAsk',
         outputFormat: { type: 'json_schema', schema: hydratedStepJsonSchema() },
+        ...this.modelOption(),
       },
     );
 

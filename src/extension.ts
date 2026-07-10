@@ -32,7 +32,11 @@ interface ActiveSession {
 
 let session: ActiveSession | undefined;
 let extContext: vscode.ExtensionContext;
-let providerFactory: ProviderFactory = (maxSteps) => new ClaudeAgentProvider(makeClaudeQuery(), { maxSteps });
+let providerFactory: ProviderFactory = (maxSteps) =>
+  new ClaudeAgentProvider(makeClaudeQuery(), {
+    maxSteps,
+    model: vscode.workspace.getConfiguration('justintime').get<string>('model') || undefined,
+  });
 
 export function activate(context: vscode.ExtensionContext): JustInTimeApi {
   extContext = context;

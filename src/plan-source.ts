@@ -15,6 +15,8 @@ export interface RepoContext {
 export interface SessionCtx {
   /** Provider session id captured during produceOutline, used to resume for hydration. */
   sessionId: string;
+  /** Analysis cwd — must match the outline call so the SDK can resume the session. */
+  workspaceRoot: string;
 }
 
 /** Current contents of the step's target file(s), keyed by workspace-relative path. */

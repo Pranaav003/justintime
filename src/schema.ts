@@ -110,12 +110,23 @@ function assertChangeKindShape(step: HydratedStepPayload): void {
   }
 }
 
+/**
+ * Convert to a JSON Schema the Claude CLI accepts. zod 4 defaults to
+ * draft-2020-12 and stamps a `$schema` meta URL the CLI's validator can't
+ * resolve, so we target draft-7 and drop the `$schema` key.
+ */
+function toCliJsonSchema(schema: z.ZodType): Record<string, unknown> {
+  const js = z.toJSONSchema(schema, { target: 'draft-7' }) as Record<string, unknown>;
+  delete js.$schema;
+  return js;
+}
+
 /** JSON Schema for the SDK's structured-output `outputFormat` (outline phase). */
 export function outlineJsonSchema(): Record<string, unknown> {
-  return z.toJSONSchema(OutlinePayloadSchema) as Record<string, unknown>;
+  return toCliJsonSchema(OutlinePayloadSchema);
 }
 
 /** JSON Schema for the SDK's structured-output `outputFormat` (per-step hydration). */
 export function hydratedStepJsonSchema(): Record<string, unknown> {
-  return z.toJSONSchema(HydratedStepPayloadSchema) as Record<string, unknown>;
+  return toCliJsonSchema(HydratedStepPayloadSchema);
 }

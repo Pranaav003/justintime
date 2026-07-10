@@ -52,6 +52,11 @@
           "default": "claude-agent-sdk",
           "description": "Model provider backend. Built for Claude; additional providers are planned."
         },
+        "justintime.model": {
+          "type": "string",
+          "default": "",
+          "description": "Claude model to use (blank = your Claude default). Set this if your API key or gateway restricts which models are available."
+        },
         "justintime.diffStyle": {
           "type": "string",
           "enum": [
@@ -101,7 +106,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build:e2e": "node esbuild-e2e.mjs",
-    "test:e2e": "npm run build && npm run build:e2e && node dist-e2e/runTest.js"
+    "test:e2e": "npm run build && npm run build:e2e && node dist-e2e/runTest.js",
+    "smoke": "node esbuild-smoke.mjs && node dist-smoke/smoke.js"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

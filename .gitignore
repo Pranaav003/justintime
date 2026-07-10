@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-e2e/
+dist-smoke/
 *.vsix
 .vscode-test/
 coverage/
