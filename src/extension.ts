@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import { existsSync } from 'node:fs';
+import { delimiter as pathDelimiter, join as pathJoin } from 'node:path';
 import { Orchestrator } from './orchestrator';
 import { EditorBridge } from './editor-bridge';
 import { ExplanationPanel } from './webview/panel';
@@ -32,11 +34,34 @@ interface ActiveSession {
 
 let session: ActiveSession | undefined;
 let extContext: vscode.ExtensionContext;
-let providerFactory: ProviderFactory = (maxSteps) =>
-  new ClaudeAgentProvider(makeClaudeQuery(), {
+let providerFactory: ProviderFactory = (maxSteps) => {
+  const cfg = vscode.workspace.getConfiguration('justintime');
+  return new ClaudeAgentProvider(makeClaudeQuery(), {
     maxSteps,
-    model: vscode.workspace.getConfiguration('justintime').get<string>('model') || undefined,
+    model: cfg.get<string>('model') || undefined,
+    claudeExecutable: resolveClaudeExecutable(cfg.get<string>('claudeExecutable')),
   });
+};
+
+/** Resolve the `claude` CLI: explicit setting, else the first match on PATH. */
+function resolveClaudeExecutable(configured?: string): string | undefined {
+  if (configured) {
+    return configured;
+  }
+  const names = process.platform === 'win32' ? ['claude.cmd', 'claude.exe', 'claude'] : ['claude'];
+  for (const dir of (process.env.PATH ?? '').split(pathDelimiter)) {
+    if (!dir) {
+      continue;
+    }
+    for (const name of names) {
+      const candidate = pathJoin(dir, name);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return undefined; // fall back to the SDK's bundled binary if present
+}
 
 export function activate(context: vscode.ExtensionContext): JustInTimeApi {
   extContext = context;

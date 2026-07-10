@@ -30,6 +30,7 @@ async function main(): Promise<void> {
   const provider = new ClaudeAgentProvider(makeClaudeQuery(), {
     maxSteps: 3,
     model: process.env.JIT_SMOKE_MODEL || undefined,
+    claudeExecutable: process.env.JIT_SMOKE_CLAUDE || undefined,
   });
 
   console.log('=== produceOutline (real Claude) ===');

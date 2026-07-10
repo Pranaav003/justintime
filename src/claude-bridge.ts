@@ -53,11 +53,14 @@ export interface ClaudeAgentProviderOptions {
   maxSteps?: number;
   /** Optional model override (blank = SDK/CLI default). For restricted keys/gateways. */
   model?: string;
+  /** Path to the `claude` executable. Lets a lean package use the user's installed CLI. */
+  claudeExecutable?: string;
 }
 
 export class ClaudeAgentProvider implements PlanProvider {
   private readonly maxSteps: number;
   private readonly model?: string;
+  private readonly claudeExecutable?: string;
 
   constructor(
     private readonly query: QueryFn,
@@ -65,10 +68,15 @@ export class ClaudeAgentProvider implements PlanProvider {
   ) {
     this.maxSteps = options.maxSteps ?? 30;
     this.model = options.model;
+    this.claudeExecutable = options.claudeExecutable;
   }
 
-  private modelOption(): Record<string, unknown> {
-    return this.model ? { model: this.model } : {};
+  /** SDK options that are conditional on provider configuration. */
+  private sdkExtras(): Record<string, unknown> {
+    return {
+      ...(this.model ? { model: this.model } : {}),
+      ...(this.claudeExecutable ? { pathToClaudeCodeExecutable: this.claudeExecutable } : {}),
+    };
   }
 
   async produceOutline(problem: string, ctx: RepoContext): Promise<WalkthroughOutline> {
@@ -79,7 +87,7 @@ export class ClaudeAgentProvider implements PlanProvider {
       disallowedTools: BLOCKED_TOOLS,
       permissionMode: 'dontAsk',
       outputFormat: { type: 'json_schema', schema: outlineJsonSchema() },
-      ...this.modelOption(),
+      ...this.sdkExtras(),
     });
 
     const payload = this.parse(result, parseOutlinePayload);
@@ -102,7 +110,7 @@ export class ClaudeAgentProvider implements PlanProvider {
         disallowedTools: BLOCKED_TOOLS,
         permissionMode: 'dontAsk',
         outputFormat: { type: 'json_schema', schema: hydratedStepJsonSchema() },
-        ...this.modelOption(),
+        ...this.sdkExtras(),
       },
     );
 

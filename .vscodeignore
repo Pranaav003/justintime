@@ -1,11 +1,24 @@
+# Sources & build tooling (only dist/ ships)
 src/**
+scripts/**
+test/**
 docs/**
-node_modules/**
-.vscode-test/**
 esbuild.mjs
+esbuild-e2e.mjs
+esbuild-smoke.mjs
 vitest.config.ts
 tsconfig.json
 **/*.test.ts
 **/*.map
 .gitignore
 .git/**
+.vscode/**
+.vscode-test/**
+dist-e2e/**
+dist-smoke/**
+
+# The Claude Agent SDK ships a ~226 MB native binary PER PLATFORM as optional
+# deps. JustInTime uses the user's installed `claude` CLI instead
+# (pathToClaudeCodeExecutable), so exclude all bundled platform binaries to keep
+# the package lean.
+node_modules/@anthropic-ai/claude-agent-sdk-*/**

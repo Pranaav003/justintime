@@ -5,6 +5,10 @@
   "version": "0.0.1",
   "publisher": "pranaaviyer",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Pranaav003/justintime.git"
+  },
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -56,6 +60,11 @@
           "type": "string",
           "default": "",
           "description": "Claude model to use (blank = your Claude default). Set this if your API key or gateway restricts which models are available."
+        },
+        "justintime.claudeExecutable": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the `claude` CLI. Blank = auto-detect on PATH. JustInTime uses your installed Claude Code CLI instead of bundling it."
         },
         "justintime.diffStyle": {
           "type": "string",
@@ -113,15 +122,16 @@
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.95.0",
     "@vscode/test-electron": "^3.0.0",
+    "@vscode/vsce": "^3.2.0",
+    "dompurify": "^3.4.11",
     "esbuild": "^0.25.12",
     "jsdom": "^29.1.1",
+    "marked": "^18.0.6",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "zod": "^4.4.3"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.205",
-    "dompurify": "^3.4.11",
-    "marked": "^18.0.6",
-    "zod": "^4.4.3"
+    "@anthropic-ai/claude-agent-sdk": "^0.3.205"
   }
 }
