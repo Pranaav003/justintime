@@ -13,6 +13,14 @@ export interface DiffHunkView {
   newText: string;
 }
 
+/** One chat turn for a step. answer/error unset while pending. */
+export interface ChatEntry {
+  id: number;
+  question: string;
+  answer?: string;
+  error?: string;
+}
+
 /** Everything the client needs to render one step. Markdown fields are sanitized client-side. */
 export interface StepView {
   stepNumber: number;
@@ -31,6 +39,8 @@ export interface StepView {
   showPrerequisites: boolean;
   dots: StepDotStatus[];
   mode: WalkthroughMode;
+  /** Persisted chat history for this step (survives navigating away and back). */
+  chat: ChatEntry[];
 }
 
 export type HostToWebview =

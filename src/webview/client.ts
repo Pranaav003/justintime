@@ -1,5 +1,5 @@
 import { renderMarkdown, escapeHtml } from './sanitize';
-import type { HostToWebview, WebviewToHost, StepView, DiffHunkView } from './protocol';
+import type { HostToWebview, WebviewToHost, StepView, DiffHunkView, ChatEntry } from './protocol';
 
 /**
  * Webview client (browser context). Renders step views, posts user actions back
@@ -26,9 +26,23 @@ function app(): HTMLElement {
 
 let chatSeq = 0;
 
-function renderChat(): string {
+function chatEntryHtml(e: ChatEntry): string {
+  const q = `<div class="chat-q">${escapeHtml(e.question)}</div>`;
+  let a: string;
+  if (e.error !== undefined) {
+    a = `<div class="chat-a" data-id="${e.id}"><span class="banner error">${escapeHtml(e.error)}</span></div>`;
+  } else if (e.answer !== undefined) {
+    a = `<div class="chat-a" data-id="${e.id}">${renderMarkdown(e.answer)}</div>`;
+  } else {
+    a = `<div class="chat-a pending" data-id="${e.id}">Thinking…</div>`;
+  }
+  return q + a;
+}
+
+function renderChat(view: StepView): string {
+  const log = view.chat.map(chatEntryHtml).join('');
   return `<div class="section chat"><h3>Ask about this step</h3>
-    <div id="chat-log"></div>
+    <div id="chat-log">${log}</div>
     <div class="chat-input">
       <input id="chat-q" type="text" placeholder="Ask a follow-up question about this step…" />
       <button class="secondary" id="chat-send">Ask</button>
@@ -128,6 +142,8 @@ function renderPrereqs(view: StepView): string {
 }
 
 function renderView(view: StepView): void {
+  // Keep the local id counter ahead of any restored history ids.
+  chatSeq = view.chat.reduce((m, e) => Math.max(m, e.id), chatSeq);
   // Coerce numerics before interpolation — defence in depth even though these
   // are host-controlled.
   const stepNum = String(Number(view.stepNumber) | 0);
@@ -162,7 +178,7 @@ function renderView(view: StepView): void {
     ${renderPrereqs(view)}
     ${explain ? '' : renderDiff(view.diffHunks)}
     ${actions}
-    ${view.reviewMode ? '' : renderChat()}
+    ${renderChat(view)}
   `;
 
   document.getElementById('apply')?.addEventListener('click', () => post({ type: 'apply' }));

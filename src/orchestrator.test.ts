@@ -244,6 +244,18 @@ describe('Orchestrator', () => {
     expect(panel.answers[0]!.answer).toContain('why this change?');
   });
 
+  it('preserves per-step chat history across re-renders', async () => {
+    const { orch, panel } = build();
+    await orch.start('fix it');
+    await panel.emit({ type: 'ask', id: 1, question: 'why step one?' });
+    // Re-render step 1 (review toggle) — its chat history must come back.
+    await panel.emit({ type: 'reviewStep', stepNumber: 1 });
+    const last = panel.rendered.at(-1)!;
+    expect(last.chat).toHaveLength(1);
+    expect(last.chat[0]!.question).toBe('why step one?');
+    expect(last.chat[0]!.answer).toContain('why step one?');
+  });
+
   it('reverts all via the rollback store', async () => {
     const { orch, panel, rollback } = build();
     await orch.start('fix it');

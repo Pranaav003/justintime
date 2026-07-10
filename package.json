@@ -2,7 +2,7 @@
   "name": "justintime",
   "displayName": "JustInTime",
   "description": "AI-guided, step-by-step code walkthroughs. Claude decomposes a problem into gated steps, navigates you to each change, explains it, and waits for your approval.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "pranaaviyer",
   "license": "MIT",
   "repository": {

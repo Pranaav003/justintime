@@ -2,7 +2,7 @@ import { initialState, transition, type SessionState, type WalkthroughEvent } fr
 import { applyHunks } from './anchor';
 import type { OutlineStep, WalkthroughOutline, HydratedStep, ApplyOutcome, WalkthroughMode } from './types';
 import type { PlanProvider, FileState } from './plan-source';
-import type { StepView, StepDotStatus, WebviewToHost, DiffHunkView } from './webview/protocol';
+import type { StepView, StepDotStatus, WebviewToHost, DiffHunkView, ChatEntry } from './webview/protocol';
 import type { RevertResult } from './rollback-store';
 
 /**
@@ -66,6 +66,7 @@ export class Orchestrator {
   private readonly hydratedByStep = new Map<number, HydratedStep>();
   private readonly beforeTextByStep = new Map<number, string>();
   private readonly stepStatus = new Map<number, 'done' | 'skipped'>();
+  private readonly chatByStep = new Map<number, ChatEntry[]>();
   private appliedCount = 0;
   private skippedCount = 0;
   private registered = false;
@@ -350,7 +351,13 @@ export class Orchestrator {
       showPrerequisites: this.opts.showPrerequisites ?? true,
       dots,
       mode: this.mode,
+      chat: this.chatByStep.get(step.stepNumber) ?? [],
     };
+  }
+
+  /** The step currently shown to the user (the reviewed step, or the active one). */
+  private displayedStepNumber(): number {
+    return this.state.phase === 'reviewing' && this.state.review ? this.state.review.viewing : this.state.currentStep;
   }
 
   /** Explain mode: navigate to the step's focus and render explanation-only (no diff). */
@@ -502,13 +509,21 @@ export class Orchestrator {
     this.panel.renderStep(this.buildView(step, hydrated, true));
   }
 
-  /** Mid-step chat: answer a follow-up question about the current step (read-only). */
+  /** Mid-step chat: answer a follow-up question about the displayed step (read-only). */
   private async ask(id: number, question: string): Promise<void> {
+    // Record the turn in the displayed step's history so it survives re-renders.
+    const stepNumber = this.displayedStepNumber();
+    const history = this.chatByStep.get(stepNumber) ?? [];
+    const entry: ChatEntry = { id, question };
+    history.push(entry);
+    this.chatByStep.set(stepNumber, history);
+
     if (!this.provider.answerQuestion) {
-      this.panel.postAnswerError(id, 'Chat is not available for this provider.');
+      entry.error = 'Chat is not available for this provider.';
+      this.panel.postAnswerError(id, entry.error);
       return;
     }
-    const step = this.currentOutlineStep();
+    const step = this.outline?.steps[stepNumber - 1];
     const contextText = step
       ? `Walkthrough step ${step.stepNumber}: ${step.title}\n` +
         `What it does: ${step.genericExplanation}\n` +
@@ -521,9 +536,11 @@ export class Orchestrator {
         workspaceRoot: this.opts.workspaceRoot,
         signal: ac.signal,
       });
+      entry.answer = answer;
       this.panel.postAnswer(id, answer);
     } catch (e) {
-      this.panel.postAnswerError(id, errMsg(e));
+      entry.error = errMsg(e);
+      this.panel.postAnswerError(id, entry.error);
     }
   }
 
