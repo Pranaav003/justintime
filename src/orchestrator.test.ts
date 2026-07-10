@@ -86,6 +86,10 @@ class FakePanel implements PanelPort {
   showIdle(m: string): void {
     this.idle.push(m);
   }
+  paused = 0;
+  showPaused(): void {
+    this.paused++;
+  }
   renderStep(v: StepView): void {
     this.rendered.push(v);
   }
@@ -254,6 +258,18 @@ describe('Orchestrator', () => {
     expect(last.chat).toHaveLength(1);
     expect(last.chat[0]!.question).toBe('why step one?');
     expect(last.chat[0]!.answer).toContain('why step one?');
+  });
+
+  it('pause shows the paused state and resume re-renders the step', async () => {
+    const { orch, panel } = build();
+    await orch.start('fix it');
+    const rendersBefore = panel.rendered.length;
+    await panel.emit({ type: 'pause' });
+    expect(panel.paused).toBe(1);
+    expect(orch.getState().phase).toBe('paused');
+    await panel.emit({ type: 'resume' });
+    expect(orch.getState().phase).toBe('waiting_for_apply');
+    expect(panel.rendered.length).toBeGreaterThan(rendersBefore); // step re-rendered on resume
   });
 
   it('reverts all via the rollback store', async () => {

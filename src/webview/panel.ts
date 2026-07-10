@@ -76,6 +76,9 @@ export class ExplanationPanel implements vscode.Disposable {
   showIdle(message: string): void {
     this.post({ type: 'idle', message });
   }
+  showPaused(): void {
+    this.post({ type: 'paused' });
+  }
   notifyApplied(stepNumber: number): void {
     this.post({ type: 'applied', stepNumber });
   }

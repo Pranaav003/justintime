@@ -25,6 +25,7 @@ export interface PanelPort {
   showBusy(message: string): void;
   showProgress(text: string): void;
   showIdle(message: string): void;
+  showPaused(): void;
   renderStep(view: StepView): void;
   notifyApplied(stepNumber: number): void;
   notifyConflict(stepNumber: number, reason: string): void;
@@ -158,7 +159,9 @@ export class Orchestrator {
   }
 
   pause(): void {
-    this.dispatch({ type: 'PAUSE' });
+    if (this.dispatch({ type: 'PAUSE' })) {
+      this.panel.showPaused();
+    }
   }
 
   async resume(): Promise<void> {
@@ -389,6 +392,9 @@ export class Orchestrator {
         break;
       case 'pause':
         this.pause();
+        break;
+      case 'resume':
+        await this.resume();
         break;
       case 'cancel':
         this.cancel();

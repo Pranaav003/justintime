@@ -48,6 +48,7 @@ export type HostToWebview =
   | { type: 'busy'; message: string }
   | { type: 'progress'; text: string }
   | { type: 'idle'; message: string }
+  | { type: 'paused' }
   | { type: 'applied'; stepNumber: number }
   | { type: 'conflict'; stepNumber: number; reason: string }
   | { type: 'error'; message: string }
@@ -60,6 +61,7 @@ export type WebviewToHost =
   | { type: 'apply' }
   | { type: 'skip' }
   | { type: 'pause' }
+  | { type: 'resume' }
   | { type: 'cancel' }
   | { type: 'ask'; id: number; question: string }
   | { type: 'reviewStep'; stepNumber: number }

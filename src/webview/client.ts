@@ -248,6 +248,12 @@ window.addEventListener('message', (e: MessageEvent<HostToWebview>) => {
     case 'idle':
       app().innerHTML = `<div class="empty">${escapeHtml(msg.message)}</div>`;
       break;
+    case 'paused':
+      app().innerHTML =
+        `<div class="empty">Paused.</div>` +
+        `<div class="actions"><button class="primary" id="resume">Resume</button></div>`;
+      document.getElementById('resume')?.addEventListener('click', () => post({ type: 'resume' }));
+      break;
     case 'applied':
       // The host advances by sending the next 'render'; nothing to do here.
       break;
