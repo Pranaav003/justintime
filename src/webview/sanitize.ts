@@ -23,6 +23,9 @@ export function renderMarkdown(md: string): string {
     ALLOWED_ATTR,
     FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'link', 'meta'],
     FORBID_ATTR: ['style', 'onerror', 'onclick', 'onload', 'onmouseover', 'srcset'],
+    // Allow only http(s), root-relative, and anchor hrefs — block javascript:,
+    // data:, vbscript:, etc.
+    ALLOWED_URI_REGEXP: /^(?:(?:https?:)|\/|#|[^a-z])/i,
   });
 }
 

@@ -112,8 +112,8 @@ export class RollbackStore {
         } else {
           if (await this.fs.exists(entry.path)) {
             await this.fs.remove(entry.path);
+            result.deleted++;
           }
-          result.deleted++;
         }
       } catch (err) {
         result.errors.push(`failed to revert ${entry.path}: ${err instanceof Error ? err.message : String(err)}`);

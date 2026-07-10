@@ -70,6 +70,12 @@ describe('findAnchor', () => {
   it('returns not_found for an empty anchor block', () => {
     expect(findAnchor(file, hunk({})).status).toBe('not_found');
   });
+
+  it('does not phantom-match a blank-line hunk against a trailing-newline artifact (A1)', () => {
+    // File ends in a newline AND contains one real blank line.
+    const r = findAnchor('a\n\nb\n', hunk({ oldText: '\n', newText: 'X' }));
+    expect(r).toEqual({ status: 'ok', startLine: 1, endLineExclusive: 2, replacementLines: ['X'] });
+  });
 });
 
 describe('applyHunks', () => {
@@ -115,6 +121,15 @@ describe('applyHunks', () => {
   it('errors with the hunk index when a hunk cannot be anchored', () => {
     const r = applyHunks(file, [hunk({ oldText: 'does.not.exist();', newText: 'nope' })]);
     expect(r).toEqual({ status: 'error', reason: 'not_found', hunkIndex: 0 });
+  });
+
+  it('reports the offending hunk index on overlap, not the bystander (A2)', () => {
+    const f3 = ['l1', 'l2', 'l3'].join('\n');
+    const r = applyHunks(f3, [
+      hunk({ oldText: 'l2', newText: 'A' }), // index 0, lines [1,2)
+      hunk({ oldText: 'l1\nl2', newText: 'B' }), // index 1, lines [0,2) — the one that overruns
+    ]);
+    expect(r).toEqual({ status: 'error', reason: 'overlap', hunkIndex: 1 });
   });
 
   it('supports deletion (empty newText removes the matched lines)', () => {

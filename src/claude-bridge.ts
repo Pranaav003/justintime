@@ -99,10 +99,17 @@ export class ClaudeAgentProvider implements PlanProvider {
   /** Iterate the message stream and return the terminal result message (or throw). */
   private async drain(prompt: string, options: Record<string, unknown>): Promise<SdkResultMessage> {
     let result: SdkResultMessage | undefined;
-    for await (const msg of this.query({ prompt, options })) {
-      if (msg.type === 'result') {
-        result = msg as SdkResultMessage;
+    try {
+      for await (const msg of this.query({ prompt, options })) {
+        if (msg.type === 'result') {
+          result = msg as SdkResultMessage;
+        }
       }
+    } catch (err) {
+      if (err instanceof ProviderError) {
+        throw err;
+      }
+      throw new ProviderError(err instanceof Error ? err.message : String(err), 'sdk_error');
     }
     if (!result) {
       throw new ProviderError('SDK stream ended without a result message', 'no_result');

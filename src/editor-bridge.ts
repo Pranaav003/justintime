@@ -20,7 +20,9 @@ export interface EditorBridgeConfig {
 /** Serves before/after virtual documents for the native diff editor. */
 class DiffContentProvider implements vscode.TextDocumentContentProvider {
   private readonly store = new Map<string, string>();
+  private readonly keyQueue: [string, string][] = [];
   private seq = 0;
+  private static readonly MAX_PAIRS = 5;
 
   register(relPath: string, before: string, after: string): [vscode.Uri, vscode.Uri] {
     const id = this.seq++;
@@ -29,6 +31,13 @@ class DiffContentProvider implements vscode.TextDocumentContentProvider {
     const rightPath = `/${id}/after/${name}`;
     this.store.set(leftPath, before);
     this.store.set(rightPath, after);
+    // Bound memory: evict the oldest diff pair once past the cap.
+    this.keyQueue.push([leftPath, rightPath]);
+    if (this.keyQueue.length > DiffContentProvider.MAX_PAIRS) {
+      const [oldLeft, oldRight] = this.keyQueue.shift()!;
+      this.store.delete(oldLeft);
+      this.store.delete(oldRight);
+    }
     return [
       vscode.Uri.from({ scheme: 'justintime-diff', path: leftPath }),
       vscode.Uri.from({ scheme: 'justintime-diff', path: rightPath }),
@@ -167,7 +176,10 @@ export class EditorBridge implements vscode.Disposable {
     }
     // Persist so the change lands on disk and stays consistent with the
     // fs-based rollback store (the edit otherwise lives only in the buffer).
-    await doc.save();
+    const saved = await doc.save();
+    if (!saved) {
+      return { status: 'error', message: 'doc.save() returned false — file not persisted' };
+    }
     return { status: 'applied' };
   }
 

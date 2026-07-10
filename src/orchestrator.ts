@@ -106,13 +106,25 @@ export class Orchestrator {
 
   async resume(): Promise<void> {
     if (this.dispatch({ type: 'RESUME' })) {
-      // Re-render the current step if we have it hydrated.
-      const step = this.currentOutlineStep();
-      const hydrated = step && this.hydratedByStep.get(step.stepNumber);
-      if (step && hydrated) {
-        this.panel.renderStep(this.buildView(step, hydrated, false));
-      }
+      this.renderCurrentAfterInterrupt();
     }
+  }
+
+  /**
+   * Re-render the current step after a pause/review interrupt. If we resumed
+   * back into 'explaining', SHOW_READY was never fired (the interrupt landed
+   * between HYDRATE_DONE and SHOW_READY), so drive it now.
+   */
+  private renderCurrentAfterInterrupt(): void {
+    const step = this.currentOutlineStep();
+    const hydrated = step && this.hydratedByStep.get(step.stepNumber);
+    if (!step || !hydrated) {
+      return;
+    }
+    if (this.state.phase === 'explaining' && !this.dispatch({ type: 'SHOW_READY' })) {
+      return;
+    }
+    this.panel.renderStep(this.buildView(step, hydrated, false));
   }
 
   private dispatch(ev: WalkthroughEvent): boolean {
@@ -158,6 +170,14 @@ export class Orchestrator {
       return;
     }
 
+    // The hydrated primaryFile may differ from the outline's targetFiles (two
+    // separate model calls); read it now so we don't false-conflict on ''.
+    if (current[hydrated.primaryFile] === undefined) {
+      const content = await this.editor.readFile(hydrated.primaryFile);
+      if (content !== undefined) {
+        current[hydrated.primaryFile] = content;
+      }
+    }
     const before = current[hydrated.primaryFile] ?? '';
     let afterText: string;
     if (hydrated.changeKind === 'edit') {
@@ -196,8 +216,12 @@ export class Orchestrator {
       // Diff view is best-effort; don't break the walkthrough if it fails.
     }
 
+    if (!this.dispatch({ type: 'SHOW_READY' })) {
+      // Interrupted (pause/review) during navigate/showDiff — don't paint the
+      // interactive Apply UI; the interrupt handler will re-render.
+      return;
+    }
     this.panel.renderStep(this.buildView(step, hydrated, false));
-    this.dispatch({ type: 'SHOW_READY' });
   }
 
   private buildView(step: OutlineStep, hydrated: HydratedStep, reviewMode: boolean): StepView {
@@ -290,7 +314,12 @@ export class Orchestrator {
 
     const outcome = await this.editor.applyStep(hydrated);
     if (outcome.status === 'applied') {
-      this.dispatch({ type: 'APPLY_DONE' });
+      if (!this.dispatch({ type: 'APPLY_DONE' })) {
+        // Interrupted while applyStep was awaiting; the change is on disk but
+        // the machine moved on. Don't fire advance/accounting on a rejected
+        // transition — leave it for manual retry/revert.
+        return;
+      }
       this.stepStatus.set(step.stepNumber, 'done');
       this.appliedCount++;
       this.panel.notifyApplied(step.stepNumber);
@@ -315,10 +344,10 @@ export class Orchestrator {
   }
 
   private async advance(): Promise<void> {
-    this.editor.clearHighlights();
     if (!this.dispatch({ type: 'ADVANCE' })) {
       return;
     }
+    this.editor.clearHighlights();
     if (this.state.status === 'completed') {
       this.panel.notifyCompleted(this.appliedCount, this.skippedCount);
       return;
@@ -327,15 +356,17 @@ export class Orchestrator {
   }
 
   private async review(n: number): Promise<void> {
-    if (this.state.phase === 'reviewing' && this.state.review?.viewing === n) {
-      if (this.dispatch({ type: 'EXIT_REVIEW' })) {
-        const step = this.currentOutlineStep();
-        const hydrated = step && this.hydratedByStep.get(step.stepNumber);
-        if (step && hydrated) {
-          this.panel.renderStep(this.buildView(step, hydrated, false));
+    if (this.state.phase === 'reviewing') {
+      if (this.state.review?.viewing === n) {
+        // Toggle off: user clicked the step they're already reviewing.
+        if (this.dispatch({ type: 'EXIT_REVIEW' })) {
+          this.renderCurrentAfterInterrupt();
         }
+        return;
       }
-      return;
+      // Switching to a different step: exit the current review first so the
+      // next REVIEW is a legal transition (no nested review).
+      this.dispatch({ type: 'EXIT_REVIEW' });
     }
     if (!this.dispatch({ type: 'REVIEW', step: n })) {
       return;

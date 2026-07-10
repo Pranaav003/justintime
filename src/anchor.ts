@@ -57,7 +57,11 @@ function findAnchorOnLines(fileLines: string[], h: AnchoredHunk): AnchorResult {
   }
 
   const starts: number[] = [];
-  for (let i = 0; i + block.length <= fileLines.length; i++) {
+  // A file ending in a newline yields a trailing '' from the split; excluding it
+  // prevents a blank-line block element from phantom-matching that artifact.
+  const searchLen =
+    fileLines.length > 0 && fileLines[fileLines.length - 1] === '' ? fileLines.length - 1 : fileLines.length;
+  for (let i = 0; i + block.length <= searchLen; i++) {
     let matched = true;
     for (let j = 0; j < block.length; j++) {
       if (!lineEq(fileLines[i + j]!, block[j]!)) {
@@ -118,7 +122,7 @@ export function applyHunks(fileText: string, hunks: AnchoredHunk[]): ApplyResult
     const higher = regions[k]!; // later in the file
     const lower = regions[k + 1]!; // earlier in the file
     if (lower.endLineExclusive > higher.startLine) {
-      return { status: 'error', reason: 'overlap', hunkIndex: higher.index };
+      return { status: 'error', reason: 'overlap', hunkIndex: lower.index };
     }
   }
 

@@ -91,6 +91,14 @@ describe('RollbackStore', () => {
     expect(fs.files.get('/repo/a.ts')).toBe('pristine');
   });
 
+  it('does not count a deletion when the created file never landed on disk (R2)', async () => {
+    const fs = new MemFs();
+    const store = new RollbackStore(fs, BASE, SID);
+    await store.snapshotBeforeApply(1, '/repo/never.ts'); // create step; file never actually written
+    const result = await store.revertAll();
+    expect(result.deleted).toBe(0);
+  });
+
   it('reports hasSnapshots', async () => {
     const fs = new MemFs();
     fs.files.set('/repo/a.ts', 'x');

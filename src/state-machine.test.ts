@@ -141,15 +141,54 @@ describe('skip', () => {
 });
 
 describe('pause / resume', () => {
-  it('PAUSE from hydrating then RESUME restores hydrating', () => {
-    const s = run([{ type: 'START', totalSteps: 1 }, { type: 'NAV_DONE' }, { type: 'PAUSE' }]);
+  it('PAUSE from waiting_for_apply then RESUME restores waiting_for_apply', () => {
+    const s = run([
+      { type: 'START', totalSteps: 1 },
+      { type: 'NAV_DONE' },
+      { type: 'HYDRATE_DONE' },
+      { type: 'SHOW_READY' },
+      { type: 'PAUSE' },
+    ]);
     expect(s.phase).toBe('paused');
-    expect(run([{ type: 'RESUME' }], s).phase).toBe('hydrating');
+    expect(run([{ type: 'RESUME' }], s).phase).toBe('waiting_for_apply');
+  });
+
+  it('rejects PAUSE during in-flight async phases (hydrating/applying)', () => {
+    const hydrating = run([{ type: 'START', totalSteps: 1 }, { type: 'NAV_DONE' }]);
+    expect(hydrating.phase).toBe('hydrating');
+    expect(transition(hydrating, { type: 'PAUSE' }).ok).toBe(false);
+
+    const applying = run([
+      { type: 'START', totalSteps: 1 },
+      { type: 'NAV_DONE' },
+      { type: 'HYDRATE_DONE' },
+      { type: 'SHOW_READY' },
+      { type: 'APPLY' },
+    ]);
+    expect(applying.phase).toBe('applying');
+    expect(transition(applying, { type: 'PAUSE' }).ok).toBe(false);
   });
 
   it('rejects PAUSE when already paused', () => {
-    const s = run([{ type: 'START', totalSteps: 1 }, { type: 'NAV_DONE' }, { type: 'PAUSE' }]);
+    const s = run([
+      { type: 'START', totalSteps: 1 },
+      { type: 'NAV_DONE' },
+      { type: 'HYDRATE_DONE' },
+      { type: 'SHOW_READY' },
+      { type: 'PAUSE' },
+    ]);
     expect(transition(s, { type: 'PAUSE' }).ok).toBe(false);
+  });
+
+  it('rejects REVIEW during in-flight async phases', () => {
+    const applying = run([
+      { type: 'START', totalSteps: 2 },
+      { type: 'NAV_DONE' },
+      { type: 'HYDRATE_DONE' },
+      { type: 'SHOW_READY' },
+      { type: 'APPLY' },
+    ]);
+    expect(transition(applying, { type: 'REVIEW', step: 1 }).ok).toBe(false);
   });
 });
 

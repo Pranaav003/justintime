@@ -157,7 +157,10 @@ async function applyStoredApiKey(): Promise<void> {
 }
 
 function disposeSession(): void {
-  session?.editor.dispose();
-  session?.panel.dispose();
+  // Clear `session` first so the panel's onDidDispose callback (fired
+  // synchronously by panel.dispose) doesn't re-dispose the editor.
+  const s = session;
   session = undefined;
+  s?.editor.dispose();
+  s?.panel.dispose();
 }

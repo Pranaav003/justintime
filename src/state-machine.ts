@@ -63,17 +63,25 @@ function illegal(event: WalkthroughEvent, phase: StepState): TransitionResult {
   return { ok: false, error: `illegal transition: ${event.type} not allowed from phase '${phase}'` };
 }
 
-/** Phases from which the walkthrough may be paused, reviewed, or errored out. */
+/**
+ * Phases with no in-flight async operation — safe to PAUSE, because RESUME
+ * restores them cleanly. In-flight phases are excluded: pausing during them
+ * would drop the pending completion event and deadlock the session.
+ */
 const ACTIVE_INTERRUPTIBLE: ReadonlySet<StepState> = new Set<StepState>([
-  'navigating',
-  'hydrating',
   'explaining',
   'waiting_for_apply',
-  'applying',
   'confirmed',
   'skipped',
   'conflict',
 ]);
+
+/**
+ * Phases with an in-flight async operation whose completion event is dispatched
+ * after the await resolves. PAUSE and REVIEW are rejected here: interrupting
+ * restores the phase without restarting the operation, deadlocking the session.
+ */
+const IN_FLIGHT: ReadonlySet<StepState> = new Set<StepState>(['navigating', 'hydrating', 'applying']);
 
 export function transition(state: SessionState, event: WalkthroughEvent): TransitionResult {
   // START is the only event valid from idle.
@@ -160,7 +168,7 @@ export function transition(state: SessionState, event: WalkthroughEvent): Transi
       return ok({ status: 'active', phase: state.pausedFrom, currentStep: state.currentStep, totalSteps: state.totalSteps });
 
     case 'REVIEW':
-      if (phase === 'reviewing' || phase === 'paused') {
+      if (phase === 'reviewing' || phase === 'paused' || IN_FLIGHT.has(phase)) {
         return illegal(event, phase);
       }
       if (event.step < 1 || event.step > state.totalSteps) {

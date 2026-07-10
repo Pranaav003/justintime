@@ -64,6 +64,12 @@ function renderPrereqs(view: StepView): string {
 }
 
 function renderView(view: StepView): void {
+  // Coerce numerics before interpolation — defence in depth even though these
+  // are host-controlled.
+  const stepNum = String(Number(view.stepNumber) | 0);
+  const totalSteps = String(Number(view.totalSteps) | 0);
+  const locationLine = String(Number(view.locationLine) | 0);
+
   const dots = view.dots
     .map((status, i) => `<span class="dot ${status}" data-step="${i + 1}" title="Step ${i + 1}"></span>`)
     .join('');
@@ -77,9 +83,9 @@ function renderView(view: StepView): void {
        </div>`;
 
   app().innerHTML = `
-    <div class="progress">${dots}<span class="progress-label">Step ${view.stepNumber} of ${view.totalSteps}</span></div>
+    <div class="progress">${dots}<span class="progress-label">Step ${stepNum} of ${totalSteps}</span></div>
     <h2 class="title">${escapeHtml(view.title)}</h2>
-    <div class="location">📍 <a class="loc-link" data-file="${escapeHtml(view.locationFile)}" data-line="${view.locationLine}">${escapeHtml(view.locationLabel)}</a></div>
+    <div class="location">📍 <a class="loc-link" data-file="${escapeHtml(view.locationFile)}" data-line="${locationLine}">${escapeHtml(view.locationLabel)}</a></div>
     <div class="section"><h3>What's happening</h3>${renderMarkdown(view.genericMarkdown)}</div>
     <div class="section"><h3>Why here</h3>${renderMarkdown(view.specificMarkdown)}</div>
     ${renderRelated(view)}
@@ -109,9 +115,11 @@ function showBanner(message: string, kind: 'warn' | 'error'): void {
 }
 
 function renderCompleted(applied: number, skipped: number): void {
+  const appliedStr = String(Number(applied) | 0);
+  const skippedStr = String(Number(skipped) | 0);
   app().innerHTML = `
     <h2 class="title">Walkthrough complete</h2>
-    <p>${applied} step(s) applied, ${skipped} skipped.</p>
+    <p>${appliedStr} step(s) applied, ${skippedStr} skipped.</p>
     <p class="review-note">Run “JustInTime: Revert All” from the Command Palette to undo every applied change.</p>
   `;
 }

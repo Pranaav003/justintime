@@ -44,7 +44,8 @@ button:disabled { opacity: .5; cursor: default; }
 export function buildPanelHtml(p: PanelHtmlParams): string {
   const csp = [
     `default-src 'none'`,
-    `img-src ${p.cspSource} https: data:`,
+    `base-uri 'none'`,
+    `img-src ${p.cspSource} https:`,
     `style-src ${p.cspSource} 'nonce-${p.nonce}'`,
     `script-src 'nonce-${p.nonce}'`,
     `font-src ${p.cspSource}`,
