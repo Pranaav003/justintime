@@ -144,7 +144,8 @@ window.addEventListener('message', (e: MessageEvent<HostToWebview>) => {
       renderView(msg.view);
       break;
     case 'busy':
-      app().innerHTML = `<div class="busy">${escapeHtml(msg.message)}</div>`;
+      app().innerHTML = `<div class="busy">${escapeHtml(msg.message)}</div><div class="actions"><button class="secondary" id="cancel">Cancel</button></div>`;
+      document.getElementById('cancel')?.addEventListener('click', () => post({ type: 'cancel' }));
       break;
     case 'applied':
       // The host advances by sending the next 'render'; nothing to do here.

@@ -14,6 +14,7 @@ Rules:
 - Do NOT include diffs, code bodies, or exact line numbers in the outline — only titles, target files, dependency edges (dependsOn), changeKind, and the two explanations. Concrete diffs are generated later, per step, against the live file.
 - genericExplanation: teach the pattern/principle/language feature as if to a competent developer who is new to this codebase; name the pattern.
 - specificExplanation: reference actual file paths and real function/variable names in THIS codebase, plus downstream effects.
+- Be efficient: do NOT read or search node_modules, dist, build outputs, .git, or lockfiles. Explore only the source files you actually need — don't crawl the whole tree.
 - Return ONLY the structured outline object.`;
 
 /** Appended to the `claude_code` preset system prompt for the per-step hydration phase. */
@@ -41,6 +42,7 @@ Rules:
 - genericExplanation: the general pattern/concept/language feature at play, taught to a competent developer new to this codebase; name it.
 - specificExplanation: how it works HERE — reference real function/variable names, call chains, and effects in this codebase.
 - Do NOT propose edits, fixes, or diffs. If the reader asked "how/why", answer by explaining the existing code, not by changing it.
+- Be efficient: do NOT read or search node_modules, dist, build outputs, .git, or lockfiles. Explore only the source files you actually need — don't crawl the whole tree.
 - Return ONLY the structured outline object.`;
 
 export function buildExplainPrompt(question: string, maxSteps: number): string {

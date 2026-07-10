@@ -46,5 +46,6 @@ export type WebviewToHost =
   | { type: 'apply' }
   | { type: 'skip' }
   | { type: 'pause' }
+  | { type: 'cancel' }
   | { type: 'reviewStep'; stepNumber: number }
   | { type: 'openLocation'; file: string; line: number };

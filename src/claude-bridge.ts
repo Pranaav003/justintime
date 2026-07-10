@@ -57,12 +57,15 @@ export interface ClaudeAgentProviderOptions {
   model?: string;
   /** Path to the `claude` executable. Lets a lean package use the user's installed CLI. */
   claudeExecutable?: string;
+  /** Cap the agentic exploration loop as a runaway backstop. */
+  maxTurns?: number;
 }
 
 export class ClaudeAgentProvider implements PlanProvider {
   private readonly maxSteps: number;
   private readonly model?: string;
   private readonly claudeExecutable?: string;
+  private readonly maxTurns?: number;
 
   constructor(
     private readonly query: QueryFn,
@@ -71,14 +74,27 @@ export class ClaudeAgentProvider implements PlanProvider {
     this.maxSteps = options.maxSteps ?? 30;
     this.model = options.model;
     this.claudeExecutable = options.claudeExecutable;
+    this.maxTurns = options.maxTurns;
   }
 
-  /** SDK options that are conditional on provider configuration. */
-  private sdkExtras(): Record<string, unknown> {
-    return {
+  /** SDK options conditional on provider config + a caller-supplied abort signal. */
+  private sdkExtras(signal?: AbortSignal): Record<string, unknown> {
+    const extras: Record<string, unknown> = {
       ...(this.model ? { model: this.model } : {}),
       ...(this.claudeExecutable ? { pathToClaudeCodeExecutable: this.claudeExecutable } : {}),
+      ...(this.maxTurns ? { maxTurns: this.maxTurns } : {}),
     };
+    if (signal) {
+      // Bridge the caller's AbortSignal to the SDK's AbortController option.
+      const ac = new AbortController();
+      if (signal.aborted) {
+        ac.abort();
+      } else {
+        signal.addEventListener('abort', () => ac.abort(), { once: true });
+      }
+      extras.abortController = ac;
+    }
+    return extras;
   }
 
   async produceOutline(problem: string, ctx: RepoContext): Promise<WalkthroughOutline> {
@@ -94,7 +110,7 @@ export class ClaudeAgentProvider implements PlanProvider {
       disallowedTools: BLOCKED_TOOLS,
       permissionMode: 'dontAsk',
       outputFormat: { type: 'json_schema', schema: outlineJsonSchema() },
-      ...this.sdkExtras(),
+      ...this.sdkExtras(ctx.signal),
     });
 
     const payload = this.parse(result, parseOutlinePayload);
@@ -117,7 +133,7 @@ export class ClaudeAgentProvider implements PlanProvider {
         disallowedTools: BLOCKED_TOOLS,
         permissionMode: 'dontAsk',
         outputFormat: { type: 'json_schema', schema: hydratedStepJsonSchema() },
-        ...this.sdkExtras(),
+        ...this.sdkExtras(session.signal),
       },
     );
 

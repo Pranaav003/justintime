@@ -12,6 +12,8 @@ export interface RepoContext {
   workspaceRoot: string;
   /** Which walkthrough to produce. Defaults to 'solve' when omitted. */
   mode?: WalkthroughMode;
+  /** Aborts the in-flight query (cancel / timeout). */
+  signal?: AbortSignal;
 }
 
 export interface SessionCtx {
@@ -19,6 +21,8 @@ export interface SessionCtx {
   sessionId: string;
   /** Analysis cwd — must match the outline call so the SDK can resume the session. */
   workspaceRoot: string;
+  /** Aborts the in-flight query (cancel / timeout). */
+  signal?: AbortSignal;
 }
 
 /** Current contents of the step's target file(s), keyed by workspace-relative path. */

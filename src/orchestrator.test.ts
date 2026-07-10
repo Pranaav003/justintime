@@ -192,6 +192,29 @@ describe('Orchestrator', () => {
     expect(panel.completed[0]).toEqual({ a: 2, s: 0, mode: 'explain' });
   });
 
+  it('cancel aborts an in-flight analysis and reports Cancelled', async () => {
+    const hangingProvider: PlanProvider = {
+      async produceOutline(_p: string, ctx: RepoContext): Promise<WalkthroughOutline> {
+        return new Promise((_resolve, reject) => {
+          ctx.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        });
+      },
+      async hydrateStep(): Promise<HydratedStep> {
+        throw new Error('not reached');
+      },
+    };
+    const panel = new FakePanel();
+    const orch = new Orchestrator(hangingProvider, new FakeEditor({ ...FILES }), panel, new FakeRollback(), {
+      workspaceRoot: '/repo',
+    });
+    const startP = orch.start('x', 'solve');
+    await Promise.resolve(); // let start() register the handler + kick off produceOutline
+    await panel.emit({ type: 'cancel' });
+    await startP;
+    expect(panel.errors.some((e) => /cancel/i.test(e))).toBe(true);
+    expect(panel.rendered).toHaveLength(0);
+  });
+
   it('reverts all via the rollback store', async () => {
     const { orch, panel, rollback } = build();
     await orch.start('fix it');

@@ -47,6 +47,10 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Show "still working" after this long; hard-abort the query after the second. */
+const SOFT_TIMEOUT_MS = 120_000;
+const HARD_TIMEOUT_MS = 240_000;
+
 function join(...parts: string[]): string {
   return parts.join('/').replace(/\/{2,}/g, '/');
 }
@@ -61,6 +65,33 @@ export class Orchestrator {
   private appliedCount = 0;
   private skippedCount = 0;
   private registered = false;
+  private inflight?: AbortController;
+  private cancelled = false;
+  private timedOut = false;
+
+  /** Run a provider call with a soft "still working" nudge and a hard abort timeout. */
+  private async withTimeout<T>(op: (signal: AbortSignal) => Promise<T>, onSoft: () => void): Promise<T> {
+    this.cancelled = false;
+    this.timedOut = false;
+    this.inflight = new AbortController();
+    const soft = setTimeout(onSoft, SOFT_TIMEOUT_MS);
+    const hard = setTimeout(() => {
+      this.timedOut = true;
+      this.inflight?.abort();
+    }, HARD_TIMEOUT_MS);
+    try {
+      return await op(this.inflight.signal);
+    } finally {
+      clearTimeout(soft);
+      clearTimeout(hard);
+    }
+  }
+
+  /** Abort the in-flight analysis/hydration (from the panel Cancel button). */
+  cancel(): void {
+    this.cancelled = true;
+    this.inflight?.abort();
+  }
 
   constructor(
     private readonly provider: PlanProvider,
@@ -85,9 +116,18 @@ export class Orchestrator {
     this.panel.showBusy(mode === 'explain' ? 'Reading your codebase…' : 'Analyzing your codebase…');
     let outline: WalkthroughOutline;
     try {
-      outline = await this.provider.produceOutline(problem, { workspaceRoot: this.opts.workspaceRoot, mode });
+      outline = await this.withTimeout(
+        (signal) => this.provider.produceOutline(problem, { workspaceRoot: this.opts.workspaceRoot, mode, signal }),
+        () => this.panel.showBusy('Still working on a large codebase… you can Cancel below and try a narrower question.'),
+      );
     } catch (e) {
-      this.panel.notifyError(`Analysis failed: ${errMsg(e)}`);
+      this.panel.notifyError(
+        this.cancelled
+          ? 'Cancelled.'
+          : this.timedOut
+            ? 'Analysis timed out. Try a narrower question or open a smaller folder, then start again.'
+            : `Analysis failed: ${errMsg(e)}`,
+      );
       return;
     }
     this.outline = outline;
@@ -172,13 +212,24 @@ export class Orchestrator {
 
     let hydrated: HydratedStep;
     try {
-      hydrated = await this.provider.hydrateStep(step, current, {
-        sessionId: this.outline!.sessionId,
-        workspaceRoot: this.opts.workspaceRoot,
-      });
+      hydrated = await this.withTimeout(
+        (signal) =>
+          this.provider.hydrateStep(step, current, {
+            sessionId: this.outline!.sessionId,
+            workspaceRoot: this.opts.workspaceRoot,
+            signal,
+          }),
+        () => this.panel.showBusy(`Still preparing step ${step.stepNumber}… you can Cancel below.`),
+      );
     } catch (e) {
       this.dispatch({ type: 'HYDRATE_FAILED', message: errMsg(e) });
-      this.panel.notifyError(`Could not prepare step ${step.stepNumber}: ${errMsg(e)}`);
+      this.panel.notifyError(
+        this.cancelled
+          ? 'Cancelled.'
+          : this.timedOut
+            ? `Step ${step.stepNumber} timed out. Skip it or start again with a narrower scope.`
+            : `Could not prepare step ${step.stepNumber}: ${errMsg(e)}`,
+      );
       return;
     }
 
@@ -315,6 +366,9 @@ export class Orchestrator {
         break;
       case 'pause':
         this.pause();
+        break;
+      case 'cancel':
+        this.cancel();
         break;
       case 'reviewStep':
         await this.review(msg.stepNumber);
