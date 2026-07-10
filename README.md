@@ -35,7 +35,7 @@ Pick explicitly — JustInTime never guesses whether you want changes:
 | `justintime.diffStyle` | `inline` | Diff display mode (`inline` / `split`) |
 | `justintime.autoNavigate` | `true` | Open + scroll to the target file each step |
 | `justintime.showPrerequisites` | `true` | Show the prerequisites section |
-| `justintime.highlightColor` | `#FFF3CD` | Target range highlight color |
+| `justintime.highlightColor` | `rgba(88,166,255,0.15)` | Target range highlight (translucent; calm blue by default) |
 | `justintime.maxSteps` | `30` | Max steps per walkthrough |
 | `justintime.model` | *(blank)* | Pin a Claude model (blank = your default) |
 | `justintime.claudeExecutable` | *(blank)* | Path to `claude` (blank = auto-detect on PATH) |

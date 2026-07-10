@@ -2,7 +2,7 @@
   "name": "justintime",
   "displayName": "JustInTime",
   "description": "AI-guided, step-by-step code walkthroughs. Claude decomposes a problem into gated steps, navigates you to each change, explains it, and waits for your approval.",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "publisher": "pranaaviyer",
   "license": "MIT",
   "repository": {
@@ -95,13 +95,13 @@
         },
         "justintime.highlightColor": {
           "type": "string",
-          "default": "#FFF3CD",
-          "description": "Background color for the target code range highlight."
+          "default": "rgba(88, 166, 255, 0.15)",
+          "description": "Background color for the target code range highlight. A translucent value (rgba) is gentler on the eyes — e.g. calm blue rgba(88,166,255,0.15) or dandelion rgba(255,214,51,0.16)."
         },
         "justintime.secondaryHighlightColor": {
           "type": "string",
-          "default": "#D1ECF1",
-          "description": "Background color for related code highlights."
+          "default": "rgba(88, 166, 255, 0.08)",
+          "description": "Background color for related code highlights (kept lighter than the primary)."
         },
         "justintime.maxSteps": {
           "type": "number",

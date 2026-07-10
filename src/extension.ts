@@ -139,8 +139,8 @@ async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<v
   const config = vscode.workspace.getConfiguration('justintime');
   const maxSteps = config.get<number>('maxSteps', 30);
   const showPrerequisites = config.get<boolean>('showPrerequisites', true);
-  const highlightColor = config.get<string>('highlightColor', '#FFF3CD');
-  const secondaryHighlightColor = config.get<string>('secondaryHighlightColor', '#D1ECF1');
+  const highlightColor = config.get<string>('highlightColor', 'rgba(88, 166, 255, 0.15)');
+  const secondaryHighlightColor = config.get<string>('secondaryHighlightColor', 'rgba(88, 166, 255, 0.08)');
 
   disposeSession();
 
