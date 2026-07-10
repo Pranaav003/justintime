@@ -14,6 +14,7 @@ import type { RevertResult } from './rollback-store';
  */
 
 export interface EditorPort {
+  listFiles(): Promise<string[]>;
   navigateTo(relPath: string, startLine: number, endLine: number): Promise<void>;
   showDiff(title: string, relPath: string, before: string, after: string): Promise<void>;
   applyStep(step: HydratedStep): Promise<ApplyOutcome>;
@@ -132,6 +133,16 @@ export class Orchestrator {
     }
     this.mode = mode;
     this.panel.showBusy(mode === 'explain' ? 'Reading your codebase…' : 'Analyzing your codebase…');
+
+    // Repo-map pre-pass: hand the model the file tree so it skips discovery turns.
+    this.panel.showProgress('Mapping the workspace…');
+    let repoMap: string[] = [];
+    try {
+      repoMap = await this.editor.listFiles();
+    } catch {
+      // Best-effort; fall back to the model globbing on its own.
+    }
+
     let outline: WalkthroughOutline;
     try {
       outline = await this.withTimeout(
@@ -141,6 +152,7 @@ export class Orchestrator {
             mode,
             signal,
             onProgress: (t) => this.panel.showProgress(t),
+            repoMap,
           }),
         () => this.panel.showProgress('Still working on a large codebase… you can Cancel, or start again with a narrower question.'),
       );

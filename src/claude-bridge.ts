@@ -140,7 +140,9 @@ export class ClaudeAgentProvider implements PlanProvider {
     const mode = ctx.mode ?? 'solve';
     const append = mode === 'explain' ? EXPLAIN_SYSTEM_APPEND : OUTLINE_SYSTEM_APPEND;
     const prompt =
-      mode === 'explain' ? buildExplainPrompt(problem, this.maxSteps) : buildOutlinePrompt(problem, this.maxSteps);
+      mode === 'explain'
+        ? buildExplainPrompt(problem, this.maxSteps, ctx.repoMap)
+        : buildOutlinePrompt(problem, this.maxSteps, ctx.repoMap);
 
     const result = await this.drain(prompt, {
       cwd: ctx.workspaceRoot,

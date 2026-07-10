@@ -28,8 +28,20 @@ Rules:
 - navigation.startLine/endLine are advisory only (1-based); the extension anchors by content, not by line number.
 - Return ONLY the structured step object.`;
 
-export function buildOutlinePrompt(problem: string, maxSteps: number): string {
-  return `Problem to walk through:\n${problem}\n\nProduce an ordered outline of at most ${maxSteps} steps.`;
+/** A pre-enumerated file list so the model can jump straight to relevant files. */
+function repoMapSection(repoMap?: string[]): string {
+  if (!repoMap || repoMap.length === 0) {
+    return '';
+  }
+  return (
+    `\n\nRepository files (already enumerated — use this to locate relevant code instead of ` +
+    `globbing the whole tree; open only the files you actually need):\n` +
+    repoMap.join('\n')
+  );
+}
+
+export function buildOutlinePrompt(problem: string, maxSteps: number, repoMap?: string[]): string {
+  return `Problem to walk through:\n${problem}\n\nProduce an ordered outline of at most ${maxSteps} steps.${repoMapSection(repoMap)}`;
 }
 
 /** Appended to the preset for EXPLAIN mode — read-only, no code changes proposed. */
@@ -45,8 +57,8 @@ Rules:
 - Be efficient: do NOT read or search node_modules, dist, build outputs, .git, or lockfiles. Explore only the source files you actually need — don't crawl the whole tree.
 - Return ONLY the structured outline object.`;
 
-export function buildExplainPrompt(question: string, maxSteps: number): string {
-  return `Explain the following, walking through the relevant code:\n${question}\n\nProduce an ordered explanation of at most ${maxSteps} steps, each with a focus location. Propose no changes.`;
+export function buildExplainPrompt(question: string, maxSteps: number, repoMap?: string[]): string {
+  return `Explain the following, walking through the relevant code:\n${question}\n\nProduce an ordered explanation of at most ${maxSteps} steps, each with a focus location. Propose no changes.${repoMapSection(repoMap)}`;
 }
 
 /** Appended to the preset for the mid-step chat — read-only Q&A about the current step. */

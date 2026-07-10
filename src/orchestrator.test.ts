@@ -18,7 +18,9 @@ function outlineStep(n: number, file: string): OutlineStep {
 
 /** Provider returning a fixed 2-step outline; hydrates each with a hunk matching the fake file. */
 class FakeProvider implements PlanProvider {
+  lastCtx?: RepoContext;
   async produceOutline(_problem: string, ctx: RepoContext): Promise<WalkthroughOutline> {
+    this.lastCtx = ctx;
     const mode = ctx.mode ?? 'solve';
     return {
       sessionId: 'sess-x',
@@ -51,6 +53,9 @@ class FakeEditor implements EditorPort {
   applied: HydratedStep[] = [];
   cleared = 0;
   constructor(public files: Record<string, string>) {}
+  async listFiles(): Promise<string[]> {
+    return Object.keys(this.files).sort();
+  }
   async navigateTo(relPath: string, startLine: number): Promise<void> {
     this.navigated.push({ file: relPath, startLine });
   }
@@ -144,7 +149,7 @@ function build(files = FILES) {
   const panel = new FakePanel();
   const rollback = new FakeRollback();
   const orch = new Orchestrator(provider, editor, panel, rollback, { workspaceRoot: '/repo' });
-  return { orch, editor, panel, rollback };
+  return { orch, editor, panel, rollback, provider };
 }
 
 describe('Orchestrator', () => {
@@ -270,6 +275,12 @@ describe('Orchestrator', () => {
     await panel.emit({ type: 'resume' });
     expect(orch.getState().phase).toBe('waiting_for_apply');
     expect(panel.rendered.length).toBeGreaterThan(rendersBefore); // step re-rendered on resume
+  });
+
+  it('passes a repo map (file list) to the provider before analysis', async () => {
+    const { orch, provider } = build();
+    await orch.start('fix it');
+    expect(provider.lastCtx?.repoMap).toEqual(['a.ts', 'b.ts']);
   });
 
   it('reverts all via the rollback store', async () => {

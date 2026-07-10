@@ -81,6 +81,14 @@ export class EditorBridge implements vscode.Disposable {
     return vscode.Uri.joinPath(vscode.Uri.file(this.workspaceRoot), relPath);
   }
 
+  /** Bounded, noise-excluded list of workspace-relative file paths for the repo map. */
+  async listFiles(): Promise<string[]> {
+    const exclude =
+      '{**/node_modules/**,**/.git/**,**/dist/**,**/dist-e2e/**,**/dist-smoke/**,**/out/**,**/build/**,**/.vscode-test/**,**/coverage/**,**/*.map,**/*.vsix,**/*.lock,**/*-lock.json}';
+    const uris = await vscode.workspace.findFiles('**/*', exclude, 600);
+    return uris.map((u) => vscode.workspace.asRelativePath(u, false)).sort();
+  }
+
   /** Current content of a workspace-relative file, or undefined if it does not exist. */
   async readFile(relPath: string): Promise<string | undefined> {
     try {

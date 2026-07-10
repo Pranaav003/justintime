@@ -16,6 +16,8 @@ export interface RepoContext {
   signal?: AbortSignal;
   /** Called with a short human string as the model reads/searches files. */
   onProgress?: (text: string) => void;
+  /** Pre-enumerated workspace file list so the model skips tree-discovery turns. */
+  repoMap?: string[];
 }
 
 export interface SessionCtx {
