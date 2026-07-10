@@ -14,6 +14,8 @@ export interface RepoContext {
   mode?: WalkthroughMode;
   /** Aborts the in-flight query (cancel / timeout). */
   signal?: AbortSignal;
+  /** Called with a short human string as the model reads/searches files. */
+  onProgress?: (text: string) => void;
 }
 
 export interface SessionCtx {
@@ -23,6 +25,8 @@ export interface SessionCtx {
   workspaceRoot: string;
   /** Aborts the in-flight query (cancel / timeout). */
   signal?: AbortSignal;
+  /** Called with a short human string as the model reads/searches files. */
+  onProgress?: (text: string) => void;
 }
 
 /** Current contents of the step's target file(s), keyed by workspace-relative path. */

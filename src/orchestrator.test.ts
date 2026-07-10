@@ -70,6 +70,8 @@ class FakeEditor implements EditorPort {
 class FakePanel implements PanelPort {
   private handler?: (m: WebviewToHost) => void;
   busy: string[] = [];
+  progress: string[] = [];
+  idle: string[] = [];
   rendered: StepView[] = [];
   applied: number[] = [];
   conflicts: { n: number; reason: string }[] = [];
@@ -77,6 +79,12 @@ class FakePanel implements PanelPort {
   completed: { a: number; s: number; mode: string }[] = [];
   showBusy(m: string): void {
     this.busy.push(m);
+  }
+  showProgress(t: string): void {
+    this.progress.push(t);
+  }
+  showIdle(m: string): void {
+    this.idle.push(m);
   }
   renderStep(v: StepView): void {
     this.rendered.push(v);
@@ -222,7 +230,8 @@ describe('Orchestrator', () => {
     await Promise.resolve(); // let start() register the handler + kick off produceOutline
     await panel.emit({ type: 'cancel' });
     await startP;
-    expect(panel.errors.some((e) => /cancel/i.test(e))).toBe(true);
+    // cancel() resets the panel to a clean idle state (not a banner over the spinner)
+    expect(panel.idle.some((m) => /cancel/i.test(m))).toBe(true);
     expect(panel.rendered).toHaveLength(0);
   });
 

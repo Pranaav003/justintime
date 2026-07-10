@@ -210,8 +210,27 @@ window.addEventListener('message', (e: MessageEvent<HostToWebview>) => {
       renderView(msg.view);
       break;
     case 'busy':
-      app().innerHTML = `<div class="busy">${escapeHtml(msg.message)}</div><div class="actions"><button class="secondary" id="cancel">Cancel</button></div>`;
-      document.getElementById('cancel')?.addEventListener('click', () => post({ type: 'cancel' }));
+      app().innerHTML =
+        `<div class="busy">${escapeHtml(msg.message)}</div>` +
+        `<div id="analysis-progress" class="progress-line"></div>` +
+        `<div class="actions"><button class="secondary" id="cancel">Cancel</button></div>`;
+      document.getElementById('cancel')?.addEventListener('click', () => {
+        const p = document.getElementById('analysis-progress');
+        if (p) {
+          p.textContent = 'Cancelling…';
+        }
+        post({ type: 'cancel' });
+      });
+      break;
+    case 'progress': {
+      const line = document.getElementById('analysis-progress');
+      if (line) {
+        line.textContent = msg.text;
+      }
+      break;
+    }
+    case 'idle':
+      app().innerHTML = `<div class="empty">${escapeHtml(msg.message)}</div>`;
       break;
     case 'applied':
       // The host advances by sending the next 'render'; nothing to do here.

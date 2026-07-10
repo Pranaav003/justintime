@@ -23,6 +23,8 @@ export interface EditorPort {
 
 export interface PanelPort {
   showBusy(message: string): void;
+  showProgress(text: string): void;
+  showIdle(message: string): void;
   renderStep(view: StepView): void;
   notifyApplied(stepNumber: number): void;
   notifyConflict(stepNumber: number, reason: string): void;
@@ -93,6 +95,9 @@ export class Orchestrator {
   cancel(): void {
     this.cancelled = true;
     this.inflight?.abort();
+    // Reset immediately so the panel doesn't sit on a spinner while the
+    // subprocess winds down.
+    this.panel.showIdle('Cancelled. Run “JustInTime: Start Walkthrough” to begin again.');
   }
 
   constructor(
@@ -119,16 +124,23 @@ export class Orchestrator {
     let outline: WalkthroughOutline;
     try {
       outline = await this.withTimeout(
-        (signal) => this.provider.produceOutline(problem, { workspaceRoot: this.opts.workspaceRoot, mode, signal }),
-        () => this.panel.showBusy('Still working on a large codebase… you can Cancel below and try a narrower question.'),
+        (signal) =>
+          this.provider.produceOutline(problem, {
+            workspaceRoot: this.opts.workspaceRoot,
+            mode,
+            signal,
+            onProgress: (t) => this.panel.showProgress(t),
+          }),
+        () => this.panel.showProgress('Still working on a large codebase… you can Cancel, or start again with a narrower question.'),
       );
     } catch (e) {
-      this.panel.notifyError(
-        this.cancelled
-          ? 'Cancelled.'
-          : this.timedOut
-            ? 'Analysis timed out. Try a narrower question or open a smaller folder, then start again.'
-            : `Analysis failed: ${errMsg(e)}`,
+      if (this.cancelled) {
+        return; // cancel() already reset the panel
+      }
+      this.panel.showIdle(
+        this.timedOut
+          ? 'Analysis timed out. Try a narrower question or open a smaller folder, then start again.'
+          : `Analysis failed: ${errMsg(e)}`,
       );
       return;
     }
@@ -220,18 +232,20 @@ export class Orchestrator {
             sessionId: this.outline!.sessionId,
             workspaceRoot: this.opts.workspaceRoot,
             signal,
+            onProgress: (t) => this.panel.showProgress(t),
           }),
-        () => this.panel.showBusy(`Still preparing step ${step.stepNumber}… you can Cancel below.`),
+        () => this.panel.showProgress(`Still preparing step ${step.stepNumber}… you can Cancel.`),
       );
     } catch (e) {
+      if (this.cancelled) {
+        return; // cancel() already reset the panel
+      }
+      if (this.timedOut) {
+        this.panel.showIdle(`Step ${step.stepNumber} timed out. Start again with a narrower scope.`);
+        return;
+      }
       this.dispatch({ type: 'HYDRATE_FAILED', message: errMsg(e) });
-      this.panel.notifyError(
-        this.cancelled
-          ? 'Cancelled.'
-          : this.timedOut
-            ? `Step ${step.stepNumber} timed out. Skip it or start again with a narrower scope.`
-            : `Could not prepare step ${step.stepNumber}: ${errMsg(e)}`,
-      );
+      this.panel.notifyError(`Could not prepare step ${step.stepNumber}: ${errMsg(e)}`);
       return;
     }
 

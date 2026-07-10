@@ -16,6 +16,7 @@ const PANEL_CSS = `
 body { font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); padding: 0 12px 24px; }
 #app { max-width: 720px; }
 .busy, .empty { opacity: .8; padding: 24px 0; }
+.progress-line { opacity: .7; font-family: var(--vscode-editor-font-family, monospace); font-size: .9em; margin: 4px 0 12px; min-height: 1.2em; }
 .progress { display: flex; gap: 6px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
 .dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--vscode-foreground); cursor: pointer; }
 .dot.done { background: var(--vscode-charts-green, #4caf50); border-color: transparent; }

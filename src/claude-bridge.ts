@@ -49,6 +49,42 @@ export class ProviderError extends Error {
   }
 }
 
+/** Turn a streamed SDK message into a short human progress string, if it is tool activity. */
+function reportProgress(msg: SdkMessage, onProgress: (text: string) => void): void {
+  const rec = msg as Record<string, unknown>;
+  if (msg.type === 'tool_use_summary' && typeof rec.summary === 'string') {
+    onProgress(rec.summary);
+    return;
+  }
+  if (msg.type === 'assistant') {
+    const message = rec.message as { content?: unknown } | undefined;
+    const content = message?.content;
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        const b = block as { type?: string; name?: string; input?: Record<string, unknown> };
+        if (b.type === 'tool_use') {
+          onProgress(describeTool(b.name, b.input));
+        }
+      }
+    }
+  }
+}
+
+function describeTool(name?: string, input?: Record<string, unknown>): string {
+  const i = input ?? {};
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+  switch (name) {
+    case 'Read':
+      return `Reading ${str(i.file_path)}`;
+    case 'Grep':
+      return `Searching for “${str(i.pattern)}”`;
+    case 'Glob':
+      return `Scanning ${str(i.pattern) || str(i.path) || 'files'}`;
+    default:
+      return name ? `${name}…` : 'Working…';
+  }
+}
+
 const READONLY_TOOLS = ['Read', 'Glob', 'Grep'];
 // Known destructive tools removed from the model's context entirely. Anything
 // else is still denied by permissionMode 'dontAsk' (deny-if-not-pre-approved).
@@ -114,7 +150,7 @@ export class ClaudeAgentProvider implements PlanProvider {
       permissionMode: 'dontAsk',
       outputFormat: { type: 'json_schema', schema: outlineJsonSchema() },
       ...this.sdkExtras(ctx.signal),
-    });
+    }, ctx.onProgress);
 
     const payload = this.parse(result, parseOutlinePayload);
     const sessionId = result.session_id;
@@ -138,6 +174,7 @@ export class ClaudeAgentProvider implements PlanProvider {
         outputFormat: { type: 'json_schema', schema: hydratedStepJsonSchema() },
         ...this.sdkExtras(session.signal),
       },
+      session.onProgress,
     );
 
     const payload = this.parse(result, parseHydratedStep);
@@ -152,15 +189,22 @@ export class ClaudeAgentProvider implements PlanProvider {
       disallowedTools: BLOCKED_TOOLS,
       permissionMode: 'dontAsk',
       ...this.sdkExtras(ctx.signal),
-    });
+    }, ctx.onProgress);
     return typeof result.result === 'string' ? result.result : '';
   }
 
   /** Iterate the message stream and return the terminal result message (or throw). */
-  private async drain(prompt: string, options: Record<string, unknown>): Promise<SdkResultMessage> {
+  private async drain(
+    prompt: string,
+    options: Record<string, unknown>,
+    onProgress?: (text: string) => void,
+  ): Promise<SdkResultMessage> {
     let result: SdkResultMessage | undefined;
     try {
       for await (const msg of this.query({ prompt, options })) {
+        if (onProgress) {
+          reportProgress(msg, onProgress);
+        }
         if (msg.type === 'result') {
           result = msg as SdkResultMessage;
         }

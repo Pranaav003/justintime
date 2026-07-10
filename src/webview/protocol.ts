@@ -36,6 +36,8 @@ export interface StepView {
 export type HostToWebview =
   | { type: 'render'; view: StepView }
   | { type: 'busy'; message: string }
+  | { type: 'progress'; text: string }
+  | { type: 'idle'; message: string }
   | { type: 'applied'; stepNumber: number }
   | { type: 'conflict'; stepNumber: number; reason: string }
   | { type: 'error'; message: string }
