@@ -101,7 +101,13 @@ export class EditorBridge implements vscode.Disposable {
       // Target may not exist yet (create step) — nothing to navigate to.
       return;
     }
-    const editor = await vscode.window.showTextDocument(doc, { preview: false });
+    // Reuse a single preview tab in the main editor column instead of piling up
+    // a new permanent tab per step; keep focus on the explanation panel.
+    const editor = await vscode.window.showTextDocument(doc, {
+      viewColumn: vscode.ViewColumn.One,
+      preview: true,
+      preserveFocus: true,
+    });
     const range = this.clampRange(doc, startLine, endLine);
     editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
     this.current = { uri, range };
@@ -136,7 +142,11 @@ export class EditorBridge implements vscode.Disposable {
   /** Open a native diff editor comparing before/after for a step. */
   async showDiff(title: string, relPath: string, beforeText: string, afterText: string): Promise<void> {
     const [left, right] = this.diffProvider.register(relPath, beforeText, afterText);
-    await vscode.commands.executeCommand('vscode.diff', left, right, title);
+    await vscode.commands.executeCommand('vscode.diff', left, right, title, {
+      preview: true,
+      viewColumn: vscode.ViewColumn.One,
+      preserveFocus: true,
+    });
   }
 
   /** Apply a hydrated step's change via WorkspaceEdit. */

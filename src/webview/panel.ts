@@ -82,6 +82,12 @@ export class ExplanationPanel implements vscode.Disposable {
   notifyCompleted(applied: number, skipped: number, mode: WalkthroughMode): void {
     this.post({ type: 'completed', applied, skipped, mode });
   }
+  postAnswer(id: number, answer: string): void {
+    this.post({ type: 'answer', id, answer });
+  }
+  postAnswerError(id: number, message: string): void {
+    this.post({ type: 'answerError', id, message });
+  }
 
   reveal(): void {
     this.panel.reveal(vscode.ViewColumn.Beside, true);

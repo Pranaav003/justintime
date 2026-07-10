@@ -49,6 +49,13 @@ export function buildExplainPrompt(question: string, maxSteps: number): string {
   return `Explain the following, walking through the relevant code:\n${question}\n\nProduce an ordered explanation of at most ${maxSteps} steps, each with a focus location. Propose no changes.`;
 }
 
+/** Appended to the preset for the mid-step chat — read-only Q&A about the current step. */
+export const CHAT_SYSTEM_APPEND = `You are answering a developer's follow-up question during a JustInTime walkthrough. This is READ-ONLY: do not propose or make any code changes. Answer concisely and accurately about the code. You may read files (Read/Glob/Grep) to answer, but do not crawl node_modules, dist, build outputs, or .git. Reply in GitHub-flavored markdown.`;
+
+export function buildChatPrompt(contextText: string, question: string): string {
+  return `Context for the current walkthrough step:\n${contextText}\n\nThe developer asks:\n${question}`;
+}
+
 import type { OutlineStep } from './types';
 
 export function buildHydratePrompt(step: OutlineStep, currentFiles: Record<string, string>): string {

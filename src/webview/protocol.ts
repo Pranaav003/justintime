@@ -39,7 +39,9 @@ export type HostToWebview =
   | { type: 'applied'; stepNumber: number }
   | { type: 'conflict'; stepNumber: number; reason: string }
   | { type: 'error'; message: string }
-  | { type: 'completed'; applied: number; skipped: number; mode: WalkthroughMode };
+  | { type: 'completed'; applied: number; skipped: number; mode: WalkthroughMode }
+  | { type: 'answer'; id: number; answer: string }
+  | { type: 'answerError'; id: number; message: string };
 
 export type WebviewToHost =
   | { type: 'ready' }
@@ -47,5 +49,6 @@ export type WebviewToHost =
   | { type: 'skip' }
   | { type: 'pause' }
   | { type: 'cancel' }
+  | { type: 'ask'; id: number; question: string }
   | { type: 'reviewStep'; stepNumber: number }
   | { type: 'openLocation'; file: string; line: number };

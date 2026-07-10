@@ -5,9 +5,11 @@ import {
   OUTLINE_SYSTEM_APPEND,
   HYDRATE_SYSTEM_APPEND,
   EXPLAIN_SYSTEM_APPEND,
+  CHAT_SYSTEM_APPEND,
   buildOutlinePrompt,
   buildHydratePrompt,
   buildExplainPrompt,
+  buildChatPrompt,
 } from './prompt-templates';
 
 /**
@@ -22,6 +24,7 @@ export interface SdkResultMessage {
   type: 'result';
   subtype: string; // 'success' | 'error_max_structured_output_retries' | ...
   structured_output?: unknown;
+  result?: string; // free-text final answer (when no outputFormat is set)
   session_id?: string;
 }
 export type SdkMessage = SdkResultMessage | { type: string; [key: string]: unknown };
@@ -139,6 +142,18 @@ export class ClaudeAgentProvider implements PlanProvider {
 
     const payload = this.parse(result, parseHydratedStep);
     return { ...payload, hazards: [] };
+  }
+
+  async answerQuestion(question: string, contextText: string, ctx: RepoContext): Promise<string> {
+    const result = await this.drain(buildChatPrompt(contextText, question), {
+      cwd: ctx.workspaceRoot,
+      systemPrompt: { type: 'preset', preset: 'claude_code', append: CHAT_SYSTEM_APPEND },
+      allowedTools: READONLY_TOOLS,
+      disallowedTools: BLOCKED_TOOLS,
+      permissionMode: 'dontAsk',
+      ...this.sdkExtras(ctx.signal),
+    });
+    return typeof result.result === 'string' ? result.result : '';
   }
 
   /** Iterate the message stream and return the terminal result message (or throw). */

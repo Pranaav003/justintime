@@ -28,6 +28,8 @@ export interface PanelPort {
   notifyConflict(stepNumber: number, reason: string): void;
   notifyError(message: string): void;
   notifyCompleted(applied: number, skipped: number, mode: WalkthroughMode): void;
+  postAnswer(id: number, answer: string): void;
+  postAnswerError(id: number, message: string): void;
   onMessage(handler: (msg: WebviewToHost) => void): void;
 }
 
@@ -370,6 +372,9 @@ export class Orchestrator {
       case 'cancel':
         this.cancel();
         break;
+      case 'ask':
+        await this.ask(msg.id, msg.question);
+        break;
       case 'reviewStep':
         await this.review(msg.stepNumber);
         break;
@@ -481,6 +486,31 @@ export class Orchestrator {
       return;
     }
     this.panel.renderStep(this.buildView(step, hydrated, true));
+  }
+
+  /** Mid-step chat: answer a follow-up question about the current step (read-only). */
+  private async ask(id: number, question: string): Promise<void> {
+    if (!this.provider.answerQuestion) {
+      this.panel.postAnswerError(id, 'Chat is not available for this provider.');
+      return;
+    }
+    const step = this.currentOutlineStep();
+    const contextText = step
+      ? `Walkthrough step ${step.stepNumber}: ${step.title}\n` +
+        `What it does: ${step.genericExplanation}\n` +
+        `Why here: ${step.specificExplanation}\n` +
+        `Relevant file(s): ${step.targetFiles.join(', ')}`
+      : 'No active step.';
+    const ac = new AbortController(); // independent of the walkthrough's inflight controller
+    try {
+      const answer = await this.provider.answerQuestion(question, contextText, {
+        workspaceRoot: this.opts.workspaceRoot,
+        signal: ac.signal,
+      });
+      this.panel.postAnswer(id, answer);
+    } catch (e) {
+      this.panel.postAnswerError(id, errMsg(e));
+    }
   }
 
   private async openLocation(file: string, line: number): Promise<void> {

@@ -31,4 +31,6 @@ export type FileState = Record<string, string>;
 export interface PlanProvider {
   produceOutline(problem: string, ctx: RepoContext): Promise<WalkthroughOutline>;
   hydrateStep(step: OutlineStep, current: FileState, session: SessionCtx): Promise<HydratedStep>;
+  /** Optional read-only follow-up chat about the current step. */
+  answerQuestion?(question: string, contextText: string, ctx: RepoContext): Promise<string>;
 }

@@ -78,6 +78,14 @@ async function main(): Promise<void> {
     if (res.status === 'ok') {
       console.log('--- resulting file ---\n' + res.text);
       console.log('SMOKE OK: outline + hydration + anchoring all succeeded.');
+      console.log('\n=== chat probe (answerQuestion) ===');
+      const answer = await provider.answerQuestion(
+        'Why does dividing by zero here produce NaN rather than throwing?',
+        `Walkthrough step 1: ${step.title}`,
+        { workspaceRoot: dir },
+      );
+      console.log('answer (first 200 chars):', JSON.stringify(answer.slice(0, 200)));
+      console.log(answer.length > 0 ? 'CHAT OK: free-text answer returned.' : 'WARN: empty answer');
     } else {
       console.log('ANCHOR FAILED:', JSON.stringify(res));
       process.exit(2);

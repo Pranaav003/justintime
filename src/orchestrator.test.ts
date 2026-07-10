@@ -41,6 +41,9 @@ class FakeProvider implements PlanProvider {
       hazards: [],
     };
   }
+  async answerQuestion(question: string, contextText: string): Promise<string> {
+    return `answer to "${question}" (ctx: ${contextText.split('\n')[0]})`;
+  }
 }
 
 class FakeEditor implements EditorPort {
@@ -89,6 +92,14 @@ class FakePanel implements PanelPort {
   }
   notifyCompleted(a: number, s: number, mode: string): void {
     this.completed.push({ a, s, mode });
+  }
+  answers: { id: number; answer: string }[] = [];
+  answerErrors: { id: number; message: string }[] = [];
+  postAnswer(id: number, answer: string): void {
+    this.answers.push({ id, answer });
+  }
+  postAnswerError(id: number, message: string): void {
+    this.answerErrors.push({ id, message });
   }
   onMessage(h: (m: WebviewToHost) => void): void {
     this.handler = h;
@@ -213,6 +224,15 @@ describe('Orchestrator', () => {
     await startP;
     expect(panel.errors.some((e) => /cancel/i.test(e))).toBe(true);
     expect(panel.rendered).toHaveLength(0);
+  });
+
+  it('routes a chat question to the provider and posts the answer', async () => {
+    const { orch, panel } = build();
+    await orch.start('fix it');
+    await panel.emit({ type: 'ask', id: 1, question: 'why this change?' });
+    expect(panel.answers).toHaveLength(1);
+    expect(panel.answers[0]!.id).toBe(1);
+    expect(panel.answers[0]!.answer).toContain('why this change?');
   });
 
   it('reverts all via the rollback store', async () => {

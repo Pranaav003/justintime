@@ -24,6 +24,70 @@ function app(): HTMLElement {
   return document.getElementById('app')!;
 }
 
+let chatSeq = 0;
+
+function renderChat(): string {
+  return `<div class="section chat"><h3>Ask about this step</h3>
+    <div id="chat-log"></div>
+    <div class="chat-input">
+      <input id="chat-q" type="text" placeholder="Ask a follow-up question about this step…" />
+      <button class="secondary" id="chat-send">Ask</button>
+    </div>
+  </div>`;
+}
+
+function wireChat(): void {
+  const input = document.getElementById('chat-q') as HTMLInputElement | null;
+  document.getElementById('chat-send')?.addEventListener('click', () => sendChat(input));
+  input?.addEventListener('keydown', (e) => {
+    if ((e as KeyboardEvent).key === 'Enter') {
+      sendChat(input);
+    }
+  });
+}
+
+function sendChat(input: HTMLInputElement | null): void {
+  if (!input) {
+    return;
+  }
+  const question = input.value.trim();
+  if (!question) {
+    return;
+  }
+  const id = ++chatSeq;
+  const log = document.getElementById('chat-log');
+  if (log) {
+    const qEl = document.createElement('div');
+    qEl.className = 'chat-q';
+    qEl.textContent = question; // textContent — never interpret as HTML
+    const aEl = document.createElement('div');
+    aEl.className = 'chat-a pending';
+    aEl.dataset.id = String(id);
+    aEl.textContent = 'Thinking…';
+    log.appendChild(qEl);
+    log.appendChild(aEl);
+  }
+  input.value = '';
+  post({ type: 'ask', id, question });
+}
+
+function fillAnswer(id: number, content: string, isError: boolean): void {
+  const el = document.querySelector<HTMLElement>(`.chat-a[data-id="${id}"]`);
+  if (!el) {
+    return;
+  }
+  el.classList.remove('pending');
+  if (isError) {
+    el.innerHTML = '';
+    const b = document.createElement('span');
+    b.className = 'banner error';
+    b.textContent = content; // raw message; textContent escapes
+    el.appendChild(b);
+  } else {
+    el.innerHTML = content; // sanitized markdown HTML from renderMarkdown
+  }
+}
+
 function renderDiff(hunks: DiffHunkView[]): string {
   if (hunks.length === 0) {
     return '<div class="section"><h3>Change</h3><p>No line edits (file-level change).</p></div>';
@@ -98,11 +162,13 @@ function renderView(view: StepView): void {
     ${renderPrereqs(view)}
     ${explain ? '' : renderDiff(view.diffHunks)}
     ${actions}
+    ${view.reviewMode ? '' : renderChat()}
   `;
 
   document.getElementById('apply')?.addEventListener('click', () => post({ type: 'apply' }));
   document.getElementById('skip')?.addEventListener('click', () => post({ type: 'skip' }));
   document.getElementById('pause')?.addEventListener('click', () => post({ type: 'pause' }));
+  wireChat();
   for (const el of Array.from(document.querySelectorAll<HTMLElement>('.dot'))) {
     el.addEventListener('click', () => post({ type: 'reviewStep', stepNumber: Number(el.dataset.step) }));
   }
@@ -158,6 +224,12 @@ window.addEventListener('message', (e: MessageEvent<HostToWebview>) => {
       break;
     case 'completed':
       renderCompleted(msg.applied, msg.skipped, msg.mode);
+      break;
+    case 'answer':
+      fillAnswer(msg.id, renderMarkdown(msg.answer), false);
+      break;
+    case 'answerError':
+      fillAnswer(msg.id, msg.message, true);
       break;
   }
 });

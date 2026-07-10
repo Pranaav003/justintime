@@ -39,6 +39,12 @@ button:disabled { opacity: .5; cursor: default; }
 .banner.warn { background: var(--vscode-inputValidation-warningBackground); }
 .banner.error { background: var(--vscode-inputValidation-errorBackground); }
 .review-note { font-style: italic; opacity: .8; margin-top: 12px; }
+.chat #chat-log { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.chat-q { font-weight: 600; }
+.chat-a { background: var(--vscode-textBlockQuote-background); border-left: 3px solid var(--vscode-textBlockQuote-border); padding: 6px 10px; border-radius: 3px; }
+.chat-a.pending { opacity: .7; font-style: italic; }
+.chat-input { display: flex; gap: 6px; }
+.chat-input input { flex: 1; padding: 6px 8px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border, transparent); border-radius: 3px; font: inherit; }
 `;
 
 export function buildPanelHtml(p: PanelHtmlParams): string {
