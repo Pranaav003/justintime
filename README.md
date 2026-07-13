@@ -19,7 +19,7 @@ JustInTime is built for Claude but works with any model. Run **“JustInTime: Se
 - **Ollama** — local `localhost:11434`; usually no key, just a model (e.g. `llama3.1`).
 - **Custom** — any OpenAI-compatible `/v1` endpoint (base URL + key + model).
 
-Non-Claude providers explore the code via a `read_files` tool loop (they don't have Claude's built-in file tools), so outline quality depends on the model. Claude remains the most capable.
+Non-Claude providers explore the code via a `read_files` tool loop (they don't have Claude's built-in file tools), so quality depends on the model. Verified against a local **Ollama** `llama3.1:8b`: outlines work well; **small (~8B) models are marginal at producing exact diff hunks in Solve mode** (a mismatch surfaces as a conflict, never a bad edit) — use **Explain mode** or a stronger model (GPT-4o, a large coder model, or Claude) for reliable Solve. The extension is forgiving of weak output: fuzzy file-path resolution, defaulted identity fields, and a validate-and-retry loop.
 
 ## Requirements
 

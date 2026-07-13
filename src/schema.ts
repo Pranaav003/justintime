@@ -40,8 +40,10 @@ export const OutlineStepSchema = z.object({
   title: z.string().min(1),
   targetFiles: z.array(z.string()).min(1),
   dependsOn: z.array(z.number().int().positive()).default([]),
-  // Optional with a default: solve-mode fills it; explain-mode steps omit it.
-  changeKind: changeKindSchema.default('edit'),
+  // Lenient: solve fills it, explain omits it, and weak models sometimes emit an
+  // out-of-enum value — coerce anything invalid/missing to 'edit' (it's advisory
+  // in the outline; hydration derives the real change).
+  changeKind: changeKindSchema.catch('edit').default('edit'),
   genericExplanation: z.string().min(1),
   specificExplanation: z.string().min(1),
   prerequisites: z.array(z.string()).optional(),
@@ -69,13 +71,18 @@ const stepVerificationSchema = z.object({
 });
 
 export const HydratedStepPayloadSchema = z.object({
-  stepNumber: z.number().int().positive(),
-  primaryFile: z.string().min(1),
-  changeKind: changeKindSchema,
+  // Identity fields are optional here and defaulted from the outline step in
+  // parseHydratedStep — weak models drop them inconsistently. Only the actual
+  // change payload (hunks / fullFileContent) is truly required (enforced below).
+  stepNumber: z.number().int().positive().optional(),
+  primaryFile: z.string().min(1).optional(),
+  changeKind: changeKindSchema.catch('edit'),
   renameTo: z.string().optional(),
   hunks: z.array(AnchoredHunkSchema).optional(),
   fullFileContent: z.string().optional(),
-  navigation: stepNavigationSchema,
+  // Optional + defaulted in parseHydratedStep: navigation is advisory (anchoring
+  // is by content), and weak models sometimes omit it.
+  navigation: stepNavigationSchema.optional(),
   highlightRanges: z.array(highlightRangeSchema).optional(),
   verification: stepVerificationSchema.optional(),
 });
@@ -84,10 +91,21 @@ export function parseOutlinePayload(data: unknown): OutlinePayload {
   return OutlinePayloadSchema.parse(data);
 }
 
-export function parseHydratedStep(data: unknown): HydratedStepPayload {
-  const step = HydratedStepPayloadSchema.parse(data);
-  assertChangeKindShape(step);
-  return step;
+export function parseHydratedStep(
+  data: unknown,
+  defaults?: { primaryFile?: string; stepNumber?: number },
+): HydratedStepPayload {
+  const parsed = HydratedStepPayloadSchema.parse(data);
+  const primaryFile = parsed.primaryFile ?? defaults?.primaryFile;
+  if (!primaryFile) {
+    throw new Error('hydrated step is missing primaryFile and no default was provided');
+  }
+  const stepNumber = parsed.stepNumber ?? defaults?.stepNumber ?? 1;
+  // Advisory navigation: synthesize from primaryFile if the model omitted it.
+  const navigation = parsed.navigation ?? { file: primaryFile, startLine: 1, endLine: 1 };
+  const full: HydratedStepPayload = { ...parsed, stepNumber, primaryFile, navigation };
+  assertChangeKindShape(full);
+  return full;
 }
 
 function assertChangeKindShape(step: HydratedStepPayload): void {

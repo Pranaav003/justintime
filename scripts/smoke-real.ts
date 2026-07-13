@@ -2,8 +2,10 @@ import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ClaudeAgentProvider } from '../src/claude-bridge';
+import { OpenAICompatibleProvider } from '../src/openai-provider';
 import { makeClaudeQuery } from '../src/sdk-adapter';
 import { applyHunks } from '../src/anchor';
+import type { PlanProvider } from '../src/plan-source';
 
 /**
  * Real-Claude smoke test of the provider layer (no VS Code). Creates a tiny
@@ -25,13 +27,33 @@ async function main(): Promise<void> {
   console.log('workspace:', dir);
   console.log('problem: guard average() against an empty array\n');
 
-  // JIT_SMOKE_MODEL lets us exercise the provider's model-override path (needed
-  // on restricted keys/gateways). Blank = the SDK/CLI default.
-  const provider = new ClaudeAgentProvider(makeClaudeQuery(), {
-    maxSteps: 3,
-    model: process.env.JIT_SMOKE_MODEL || undefined,
-    claudeExecutable: process.env.JIT_SMOKE_CLAUDE || undefined,
-  });
+  const readFile = async (p: string): Promise<string | undefined> => {
+    try {
+      return readFileSync(join(dir, p), 'utf8');
+    } catch {
+      return undefined;
+    }
+  };
+
+  // JIT_SMOKE_PROVIDER=ollama runs the OpenAI-compatible provider against a local
+  // Ollama; otherwise Claude via the Agent SDK.
+  let provider: PlanProvider;
+  if (process.env.JIT_SMOKE_PROVIDER === 'ollama') {
+    provider = new OpenAICompatibleProvider({
+      baseUrl: 'http://localhost:11434/v1',
+      apiKey: '',
+      model: process.env.JIT_SMOKE_MODEL || 'llama3.1:8b',
+      label: 'Ollama',
+      maxSteps: 3,
+    });
+    console.log('provider: Ollama', process.env.JIT_SMOKE_MODEL || 'llama3.1:8b');
+  } else {
+    provider = new ClaudeAgentProvider(makeClaudeQuery(), {
+      maxSteps: 3,
+      model: process.env.JIT_SMOKE_MODEL || undefined,
+      claudeExecutable: process.env.JIT_SMOKE_CLAUDE || undefined,
+    });
+  }
 
   const wtMode = process.env.JIT_SMOKE_WT_MODE === 'explain' ? 'explain' : 'solve';
   console.log(`=== produceOutline (real Claude, mode=${wtMode}) ===`);
@@ -40,7 +62,13 @@ async function main(): Promise<void> {
     wtMode === 'explain'
       ? 'How does average() compute its result, and what happens when the input array is empty?'
       : 'Guard average() against an empty array so it returns 0 instead of NaN.';
-  const outline = await provider.produceOutline(problem, { workspaceRoot: dir, mode: wtMode });
+  const outline = await provider.produceOutline(problem, {
+    workspaceRoot: dir,
+    mode: wtMode,
+    repoMap: [rel],
+    readFile,
+    onProgress: (t) => console.log('  …', t),
+  });
   console.log(`(${((Date.now() - t0) / 1000).toFixed(1)}s)`);
   console.log('sessionId:', outline.sessionId, '| mode:', outline.mode);
   console.log('summary:', outline.problemSummary);
@@ -60,9 +88,23 @@ async function main(): Promise<void> {
   const step = outline.steps[0]!;
   console.log('\n=== hydrateStep(1) (real Claude) ===');
   const t1 = Date.now();
+  // Guarded, basename-fuzzy read (mirrors the extension's editor bridge + A3 fix)
+  // so a model-hallucinated path like 'src/stats.ts' still resolves to stats.ts.
+  const resolveRead = async (p: string): Promise<string | undefined> =>
+    (await readFile(p)) ?? (await readFile(p.split('/').pop() ?? p));
   const targetFile = step.targetFiles[0]!;
-  const current: Record<string, string> = { [targetFile]: readFileSync(join(dir, targetFile), 'utf8') };
-  const hydrated = await provider.hydrateStep(step, current, { sessionId: outline.sessionId });
+  const current: Record<string, string> = {};
+  const tContent = await resolveRead(targetFile);
+  if (tContent !== undefined) {
+    current[targetFile] = tContent;
+  }
+  const hydrated = await provider.hydrateStep(step, current, { sessionId: outline.sessionId, workspaceRoot: dir });
+  if (current[hydrated.primaryFile] === undefined) {
+    const pc = await resolveRead(hydrated.primaryFile);
+    if (pc !== undefined) {
+      current[hydrated.primaryFile] = pc;
+    }
+  }
   console.log(`(${((Date.now() - t1) / 1000).toFixed(1)}s)`);
   console.log('primaryFile:', hydrated.primaryFile, '| changeKind:', hydrated.changeKind);
   console.log('navigation:', JSON.stringify(hydrated.navigation));
@@ -79,10 +121,10 @@ async function main(): Promise<void> {
       console.log('--- resulting file ---\n' + res.text);
       console.log('SMOKE OK: outline + hydration + anchoring all succeeded.');
       console.log('\n=== chat probe (answerQuestion) ===');
-      const answer = await provider.answerQuestion(
+      const answer = await provider.answerQuestion!(
         'Why does dividing by zero here produce NaN rather than throwing?',
         `Walkthrough step 1: ${step.title}`,
-        { workspaceRoot: dir },
+        { workspaceRoot: dir, readFile },
       );
       console.log('answer (first 200 chars):', JSON.stringify(answer.slice(0, 200)));
       console.log(answer.length > 0 ? 'CHAT OK: free-text answer returned.' : 'WARN: empty answer');

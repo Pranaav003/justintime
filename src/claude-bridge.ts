@@ -179,7 +179,7 @@ export class ClaudeAgentProvider implements PlanProvider {
       session.onProgress,
     );
 
-    const payload = this.parse(result, parseHydratedStep);
+    const payload = this.parse(result, (d) => parseHydratedStep(d, { primaryFile: step.targetFiles[0], stepNumber: step.stepNumber }));
     return { ...payload, hazards: [] };
   }
 

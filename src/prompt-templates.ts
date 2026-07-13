@@ -26,7 +26,10 @@ Rules:
 - Never paraphrase oldText or context — copy it character-for-character from the provided current content.
 - For a 'create', return fullFileContent (the entire new file). For a 'rename', return renameTo (the new relative path). For a 'delete', no hunks are needed.
 - navigation.startLine/endLine are advisory only (1-based); the extension anchors by content, not by line number.
-- Return ONLY the structured step object.`;
+- Return ONLY the structured step object.
+
+Example shape for an 'edit' (copy oldText/context verbatim from the provided content):
+{"stepNumber":1,"primaryFile":"src/foo.ts","changeKind":"edit","navigation":{"file":"src/foo.ts","startLine":10,"endLine":12},"hunks":[{"contextBefore":"function foo() {","oldText":"  return a;","newText":"  return a + b;","contextAfter":"}"}]}`;
 
 /** A pre-enumerated file list so the model can jump straight to relevant files. */
 function repoMapSection(repoMap?: string[]): string {

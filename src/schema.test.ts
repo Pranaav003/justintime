@@ -39,9 +39,9 @@ describe('parseOutlinePayload', () => {
     expect(() => parseOutlinePayload({ ...validOutline, steps: [] })).toThrow();
   });
 
-  it('rejects an invalid changeKind', () => {
+  it('coerces an unknown changeKind to edit (lenient for weak models)', () => {
     const bad = { ...validOutline, steps: [{ ...validOutline.steps[0], changeKind: 'mutate' }] };
-    expect(() => parseOutlinePayload(bad)).toThrow();
+    expect(parseOutlinePayload(bad).steps[0]!.changeKind).toBe('edit');
   });
 
   it('rejects a non-positive stepNumber', () => {

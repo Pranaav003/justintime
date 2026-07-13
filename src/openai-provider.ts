@@ -66,7 +66,9 @@ const READ_FILES_TOOL = {
 const TOOL_PREAMBLE =
   'You are working through a VS Code extension and CANNOT browse the repository directly. ' +
   'A file list is provided. Use the read_files tool to fetch the contents of files you need ' +
-  '(instead of Read/Glob/Grep) before producing your answer. When done exploring, output the requested JSON only.';
+  '(instead of Read/Glob/Grep) before producing your answer. Request paths EXACTLY as they ' +
+  'appear in the provided file list — do not invent directories or paths. When done exploring, ' +
+  'output the requested JSON only.';
 
 const MAX_TOOL_ROUNDS = 5;
 const MAX_FILES_PER_CALL = 15;
@@ -121,7 +123,9 @@ export class OpenAICompatibleProvider implements PlanProvider {
       { role: 'system', content: HYDRATE_SYSTEM_APPEND },
       { role: 'user', content: buildHydratePrompt(step, current) },
     ];
-    const payload = await this.completeJson(messages, session.signal, parseHydratedStep);
+    const payload = await this.completeJson(messages, session.signal, (d) =>
+      parseHydratedStep(d, { primaryFile: step.targetFiles[0], stepNumber: step.stepNumber }),
+    );
     return { ...payload, hazards: [] };
   }
 
@@ -164,12 +168,40 @@ export class OpenAICompatibleProvider implements PlanProvider {
       return '(could not parse read_files arguments)';
     }
     const parts: string[] = [];
-    for (const p of paths) {
-      ctx.onProgress?.(`Reading ${p}`);
-      const content = ctx.readFile ? await ctx.readFile(p) : undefined;
-      parts.push(`--- ${p} ---\n${content === undefined ? '(not found)' : content.slice(0, MAX_FILE_CHARS)}`);
+    for (const requested of paths) {
+      const resolved = this.resolvePath(requested, ctx.repoMap);
+      ctx.onProgress?.(`Reading ${resolved ?? requested}`);
+      const content = ctx.readFile && resolved ? await ctx.readFile(resolved) : undefined;
+      if (content === undefined) {
+        const hint = ctx.repoMap && ctx.repoMap.length > 0 ? ` Available files: ${ctx.repoMap.slice(0, 60).join(', ')}` : '';
+        parts.push(`--- ${requested} --- (not found).${hint}`);
+      } else {
+        const label = resolved && resolved !== requested ? `${resolved} (resolved from ${requested})` : requested;
+        parts.push(`--- ${label} ---\n${content.slice(0, MAX_FILE_CHARS)}`);
+      }
     }
     return parts.join('\n\n') || '(no files requested)';
+  }
+
+  /** Map a possibly-approximate requested path to a real one from the repo map. */
+  private resolvePath(requested: string, repoMap?: string[]): string | undefined {
+    if (!repoMap || repoMap.length === 0) {
+      return requested; // no map to check against; try as-is
+    }
+    if (repoMap.includes(requested)) {
+      return requested;
+    }
+    const base = requested.split('/').pop() ?? requested;
+    // Prefer a unique suffix match, else a unique basename match.
+    const suffix = repoMap.filter((f) => f.endsWith(`/${requested}`) || f === requested);
+    if (suffix.length === 1) {
+      return suffix[0];
+    }
+    const byBase = repoMap.filter((f) => (f.split('/').pop() ?? f) === base);
+    if (byBase.length === 1) {
+      return byBase[0];
+    }
+    return undefined; // ambiguous or unknown — report as not found with the file list
   }
 
   /** One chat call; returns the assistant message content + any tool calls. */
