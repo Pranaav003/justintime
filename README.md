@@ -10,9 +10,21 @@ Built on the [Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk). Unli
 2. **Lazy hydration.** Just before each step, JustInTime asks Claude for that step's concrete diff *against the current file state*, anchored by surrounding context rather than fragile line numbers. This is why it's immune to line-drift and to its own prior edits shifting later steps — the "just in time" in the name.
 3. **Gated apply.** Each change is a gate: navigate → explain (twice) → diff → **Apply & Next** / **Skip** / **Pause**. Every applied change is snapshotted for a crash-proof **Revert All**.
 
+## Providers
+
+JustInTime is built for Claude but works with any model. Run **“JustInTime: Set Provider & API Key”** to pick one and store credentials (in VS Code SecretStorage):
+
+- **Claude (Agent SDK)** — default, first-class. Uses your `claude` login or `ANTHROPIC_API_KEY`; gets read-only codebase tools for free.
+- **OpenAI** — `api.openai.com`; needs an API key + model (e.g. `gpt-4o`).
+- **Ollama** — local `localhost:11434`; usually no key, just a model (e.g. `llama3.1`).
+- **Custom** — any OpenAI-compatible `/v1` endpoint (base URL + key + model).
+
+Non-Claude providers explore the code via a `read_files` tool loop (they don't have Claude's built-in file tools), so outline quality depends on the model. Claude remains the most capable.
+
 ## Requirements
 
-- **The Claude Code CLI (`claude`) installed and authenticated.** JustInTime uses your existing `claude` login (or `ANTHROPIC_API_KEY`) and your installed CLI — it does not bundle a copy. Install from https://code.claude.com and run `claude` once to log in.
+- **For Claude:** the Claude Code CLI (`claude`) installed and authenticated — JustInTime uses your existing login (or `ANTHROPIC_API_KEY`) and your installed CLI rather than bundling one. Install from https://code.claude.com and run `claude` once to log in.
+- **For OpenAI/Ollama/custom:** an API key (or a running Ollama) and a model name, set via the command above.
 
 ## Two modes
 

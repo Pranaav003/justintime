@@ -18,6 +18,8 @@ export interface RepoContext {
   onProgress?: (text: string) => void;
   /** Pre-enumerated workspace file list so the model skips tree-discovery turns. */
   repoMap?: string[];
+  /** Reads a workspace-relative file — used by providers that lack built-in file tools. */
+  readFile?: (relPath: string) => Promise<string | undefined>;
 }
 
 export interface SessionCtx {

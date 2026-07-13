@@ -153,6 +153,7 @@ export class Orchestrator {
             signal,
             onProgress: (t) => this.panel.showProgress(t),
             repoMap,
+            readFile: (p) => this.editor.readFile(p),
           }),
         () => this.panel.showProgress('Still working on a large codebase… you can Cancel, or start again with a narrower question.'),
       );
@@ -562,6 +563,7 @@ export class Orchestrator {
       const answer = await this.provider.answerQuestion(question, contextText, {
         workspaceRoot: this.opts.workspaceRoot,
         signal: ac.signal,
+        readFile: (p) => this.editor.readFile(p),
       });
       entry.answer = answer;
       this.panel.postAnswer(id, answer);

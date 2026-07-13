@@ -6,6 +6,7 @@ import { EditorBridge } from './editor-bridge';
 import { ExplanationPanel } from './webview/panel';
 import { RollbackStore, type RevertResult } from './rollback-store';
 import { ClaudeAgentProvider } from './claude-bridge';
+import { OpenAICompatibleProvider } from './openai-provider';
 import { makeClaudeQuery } from './sdk-adapter';
 import { VscodeSnapshotFs } from './vscode-snapshot-fs';
 import type { PlanProvider } from './plan-source';
@@ -14,8 +15,15 @@ import type { WalkthroughMode } from './types';
 
 const SECRET_KEY = 'justintime.anthropicApiKey';
 
-/** Builds the PlanProvider for a run. Swappable for E2E tests (fake provider, no network). */
-export type ProviderFactory = (maxSteps: number) => PlanProvider;
+/** Per-provider endpoint defaults for the OpenAI-compatible family. */
+const OPENAI_FAMILY: Record<string, { baseUrl: string; label: string; defaultModel: string }> = {
+  openai: { baseUrl: 'https://api.openai.com/v1', label: 'OpenAI', defaultModel: 'gpt-4o' },
+  ollama: { baseUrl: 'http://localhost:11434/v1', label: 'Ollama', defaultModel: 'llama3.1' },
+  custom: { baseUrl: '', label: 'Custom', defaultModel: '' },
+};
+
+/** Builds the PlanProvider for a run. May be async (reads SecretStorage). Swappable for E2E tests. */
+export type ProviderFactory = (maxSteps: number) => PlanProvider | Promise<PlanProvider>;
 
 /** Extension API returned from activate(); used by the E2E suite to drive the loop. */
 export interface JustInTimeApi {
@@ -35,14 +43,37 @@ interface ActiveSession {
 
 let session: ActiveSession | undefined;
 let extContext: vscode.ExtensionContext;
-let providerFactory: ProviderFactory = (maxSteps) => {
+let providerFactory: ProviderFactory = (maxSteps) => defaultProvider(maxSteps);
+
+/** Construct the configured provider, resolving keys from SecretStorage. */
+async function defaultProvider(maxSteps: number): Promise<PlanProvider> {
   const cfg = vscode.workspace.getConfiguration('justintime');
-  return new ClaudeAgentProvider(makeClaudeQuery(), {
+  const provider = cfg.get<string>('provider', 'claude-agent-sdk');
+  const model = cfg.get<string>('model') || undefined;
+
+  if (provider === 'claude-agent-sdk') {
+    await applyStoredApiKey();
+    return new ClaudeAgentProvider(makeClaudeQuery(), {
+      maxSteps,
+      model,
+      claudeExecutable: resolveClaudeExecutable(cfg.get<string>('claudeExecutable')),
+    });
+  }
+
+  const preset = OPENAI_FAMILY[provider] ?? OPENAI_FAMILY.custom!;
+  const baseUrl = cfg.get<string>('baseUrl') || preset.baseUrl;
+  if (!baseUrl) {
+    throw new Error(`Set "justintime.baseUrl" for the ${provider} provider (run "JustInTime: Set Provider & API Key").`);
+  }
+  const apiKey = (await extContext.secrets.get(`justintime.key.${provider}`)) ?? '';
+  return new OpenAICompatibleProvider({
+    baseUrl,
+    apiKey,
+    model: model ?? preset.defaultModel,
+    label: preset.label,
     maxSteps,
-    model: cfg.get<string>('model') || undefined,
-    claudeExecutable: resolveClaudeExecutable(cfg.get<string>('claudeExecutable')),
   });
-};
+}
 
 /** Resolve the `claude` CLI: explicit setting, else the first match on PATH. */
 function resolveClaudeExecutable(configured?: string): string | undefined {
@@ -142,6 +173,16 @@ async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<v
   const highlightColor = config.get<string>('highlightColor', 'rgba(88, 166, 255, 0.15)');
   const secondaryHighlightColor = config.get<string>('secondaryHighlightColor', 'rgba(88, 166, 255, 0.08)');
 
+  // Resolve the provider before touching the current session, so a config error
+  // (e.g. missing base URL) doesn't tear down an in-progress walkthrough.
+  let provider: PlanProvider;
+  try {
+    provider = await providerFactory(maxSteps);
+  } catch (err) {
+    void vscode.window.showErrorMessage(`JustInTime: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
   disposeSession();
 
   const panel = new ExplanationPanel(extContext.extensionUri);
@@ -151,7 +192,7 @@ async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<v
     extContext.globalStorageUri.fsPath,
     globalThis.crypto.randomUUID(),
   );
-  const orchestrator = new Orchestrator(providerFactory(maxSteps), editor, panel, rollback, {
+  const orchestrator = new Orchestrator(provider, editor, panel, rollback, {
     workspaceRoot,
     maxSteps,
     showPrerequisites,
@@ -182,16 +223,75 @@ async function revertAllCommand(): Promise<void> {
 }
 
 async function setApiKey(): Promise<void> {
+  const pick = await vscode.window.showQuickPick(
+    [
+      { label: 'Claude (Agent SDK)', description: 'Default. Uses your claude login or an Anthropic API key.', id: 'claude-agent-sdk' },
+      { label: 'OpenAI', description: 'api.openai.com — needs an API key + model', id: 'openai' },
+      { label: 'Ollama (local)', description: 'localhost:11434 — usually no key; set a model', id: 'ollama' },
+      { label: 'Custom (OpenAI-compatible)', description: 'Any /v1 endpoint — base URL + key + model', id: 'custom' },
+    ],
+    { title: 'JustInTime — choose a provider', placeHolder: 'Which model provider?' },
+  );
+  if (!pick) {
+    return;
+  }
+  const cfg = vscode.workspace.getConfiguration('justintime');
+  const G = vscode.ConfigurationTarget.Global;
+
+  if (pick.id === 'claude-agent-sdk') {
+    const key = await vscode.window.showInputBox({
+      prompt: 'Anthropic API key (leave blank to use your existing `claude` login)',
+      password: true,
+      ignoreFocusOut: true,
+    });
+    if (key) {
+      await extContext.secrets.store(SECRET_KEY, key);
+      process.env.ANTHROPIC_API_KEY = key;
+    }
+    await cfg.update('provider', 'claude-agent-sdk', G);
+    void vscode.window.showInformationMessage('JustInTime: provider set to Claude.');
+    return;
+  }
+
+  // OpenAI-compatible family
+  const preset = OPENAI_FAMILY[pick.id]!;
+  let baseUrl = preset.baseUrl;
+  if (pick.id === 'custom') {
+    const entered = await vscode.window.showInputBox({
+      prompt: 'OpenAI-compatible base URL (including /v1)',
+      value: 'https://',
+      ignoreFocusOut: true,
+    });
+    if (!entered) {
+      return;
+    }
+    baseUrl = entered;
+    await cfg.update('baseUrl', entered, G);
+  } else if (pick.id === 'ollama') {
+    await cfg.update('baseUrl', '', G); // use the default localhost endpoint
+  }
+
   const key = await vscode.window.showInputBox({
-    prompt: 'Anthropic API key for JustInTime (stored securely in VS Code SecretStorage)',
+    prompt: `API key for ${preset.label}${pick.id === 'ollama' ? ' (leave blank — Ollama needs none)' : ''}`,
     password: true,
     ignoreFocusOut: true,
   });
-  if (key) {
-    await extContext.secrets.store(SECRET_KEY, key);
-    process.env.ANTHROPIC_API_KEY = key;
-    void vscode.window.showInformationMessage('JustInTime: Anthropic API key saved.');
+  // For Ollama a blank key is fine; store whatever was entered (possibly empty).
+  await extContext.secrets.store(`justintime.key.${pick.id}`, key ?? '');
+
+  const model = await vscode.window.showInputBox({
+    prompt: `Model name for ${preset.label}`,
+    value: preset.defaultModel,
+    ignoreFocusOut: true,
+  });
+  if (model) {
+    await cfg.update('model', model, G);
   }
+
+  await cfg.update('provider', pick.id, G);
+  void vscode.window.showInformationMessage(
+    `JustInTime: provider set to ${preset.label} (${baseUrl}). Model: ${model || preset.defaultModel || '(unset)'}.`,
+  );
 }
 
 /**

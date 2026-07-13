@@ -2,7 +2,7 @@
   "name": "justintime",
   "displayName": "JustInTime",
   "description": "AI-guided, step-by-step code walkthroughs. Claude decomposes a problem into gated steps, navigates you to each change, explains it, and waits for your approval.",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "publisher": "pranaaviyer",
   "license": "MIT",
   "repository": {
@@ -50,7 +50,7 @@
       },
       {
         "command": "justintime.setApiKey",
-        "title": "JustInTime: Set Anthropic API Key"
+        "title": "JustInTime: Set Provider & API Key"
       }
     ],
     "configuration": {
@@ -59,15 +59,29 @@
         "justintime.provider": {
           "type": "string",
           "enum": [
-            "claude-agent-sdk"
+            "claude-agent-sdk",
+            "openai",
+            "ollama",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Claude via the Claude Agent SDK (default, first-class).",
+            "OpenAI (https://api.openai.com/v1).",
+            "Ollama (local, http://localhost:11434/v1).",
+            "Any OpenAI-compatible endpoint (set justintime.baseUrl)."
           ],
           "default": "claude-agent-sdk",
-          "description": "Model provider backend. Built for Claude; additional providers are planned."
+          "description": "Model provider backend. Use 'JustInTime: Set Provider & API Key' to configure. Claude is first-class; OpenAI/Ollama/custom use an OpenAI-compatible endpoint."
         },
         "justintime.model": {
           "type": "string",
           "default": "",
-          "description": "Claude model to use (blank = your Claude default). Set this if your API key or gateway restricts which models are available."
+          "description": "Model to use. For Claude, blank = your default. For OpenAI/Ollama/custom, set the model name (e.g. gpt-4o, llama3.1)."
+        },
+        "justintime.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI-compatible base URL (including /v1). Used by the 'custom' provider; overrides the default for 'ollama'."
         },
         "justintime.claudeExecutable": {
           "type": "string",
