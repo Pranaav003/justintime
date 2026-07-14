@@ -33,6 +33,7 @@ const stepNavigationSchema = z.object({
   file: z.string().min(1),
   startLine: z.number().int().positive(),
   endLine: z.number().int().positive(),
+  anchor: z.string().optional(),
 });
 
 export const OutlineStepSchema = z.object({

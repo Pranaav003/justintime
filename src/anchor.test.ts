@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findAnchor, applyHunks } from './anchor';
+import { findAnchor, applyHunks, locateSnippet } from './anchor';
 import type { AnchoredHunk } from './types';
 
 function hunk(partial: Partial<AnchoredHunk>): AnchoredHunk {
@@ -75,6 +75,20 @@ describe('findAnchor', () => {
     // File ends in a newline AND contains one real blank line.
     const r = findAnchor('a\n\nb\n', hunk({ oldText: '\n', newText: 'X' }));
     expect(r).toEqual({ status: 'ok', startLine: 1, endLineExclusive: 2, replacementLines: ['X'] });
+  });
+});
+
+describe('locateSnippet', () => {
+  it('returns the 1-based inclusive line range of a verbatim snippet', () => {
+    expect(locateSnippet(file, '  return cart;')).toEqual({ startLine: 3, endLine: 3 });
+  });
+
+  it('locates a multi-line snippet', () => {
+    expect(locateSnippet(file, '  cart.total += item.price;\n  return cart;')).toEqual({ startLine: 2, endLine: 3 });
+  });
+
+  it('returns undefined when the snippet is not present (falls back to advisory lines)', () => {
+    expect(locateSnippet(file, 'no.such.code();')).toBeUndefined();
   });
 });
 

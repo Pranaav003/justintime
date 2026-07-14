@@ -59,7 +59,7 @@ export const EXPLAIN_SYSTEM_APPEND = `You are producing a JustInTime EXPLANATION
 Rules:
 - Explore the codebase read-only (Read/Glob/Grep) before answering.
 - Decompose the explanation into the smallest meaningful ordered steps — one focused idea per step — that walk the reader through the relevant code to build understanding.
-- Each step MUST set "focus" to the exact location it discusses: { file (relative path), startLine, endLine } (1-based). This is where the editor will navigate; pick the smallest range that captures the idea.
+- Each step MUST set "focus" to the location it discusses: { file (relative path), startLine, endLine } (1-based) AND focus.anchor = a SHORT verbatim snippet (1–3 lines copied EXACTLY from that file) of the code the step is about. The editor locates the code by focus.anchor, so the snippet must be real — line numbers can be approximate.
 - genericExplanation: the general pattern/concept/language feature at play, taught to a competent developer new to this codebase; name it.
 - specificExplanation: how it works HERE — reference real function/variable names, call chains, and effects in this codebase.
 - Do NOT propose edits, fixes, or diffs. If the reader asked "how/why", answer by explaining the existing code, not by changing it.
@@ -69,7 +69,8 @@ Rules:
 const EXPLAIN_SHAPE =
   '\n\nReturn JSON of exactly this shape (problemSummary and steps are required):\n' +
   '{"problemSummary":"one sentence","steps":[{"stepNumber":1,"title":"short title",' +
-  '"targetFiles":["relative/path.ts"],"focus":{"file":"relative/path.ts","startLine":1,"endLine":10},' +
+  '"targetFiles":["relative/path.ts"],"focus":{"file":"relative/path.ts","startLine":1,"endLine":10,' +
+  '"anchor":"a verbatim line copied from the file"},' +
   '"genericExplanation":"the concept","specificExplanation":"how it works here"}]}';
 
 export function buildExplainPrompt(question: string, maxSteps: number, repoMap?: string[]): string {

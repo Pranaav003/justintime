@@ -1,5 +1,5 @@
 import { initialState, transition, type SessionState, type WalkthroughEvent } from './state-machine';
-import { applyHunks } from './anchor';
+import { applyHunks, locateSnippet } from './anchor';
 import type { OutlineStep, WalkthroughOutline, HydratedStep, ApplyOutcome, WalkthroughMode } from './types';
 import type { PlanProvider, FileState } from './plan-source';
 import type { StepView, StepDotStatus, WebviewToHost, DiffHunkView, ChatEntry } from './webview/protocol';
@@ -302,6 +302,15 @@ export class Orchestrator {
       afterText = before; // rename: content unchanged
     }
 
+    // Anchor the highlight to where the first hunk actually is, rather than the
+    // model's advisory navigation line numbers.
+    if (hydrated.changeKind === 'edit' && hydrated.hunks && hydrated.hunks.length > 0) {
+      const loc = locateSnippet(before, hydrated.hunks[0]!.oldText);
+      if (loc) {
+        hydrated.navigation = { file: hydrated.primaryFile, startLine: loc.startLine, endLine: loc.endLine };
+      }
+    }
+
     this.hydratedByStep.set(step.stepNumber, hydrated);
     this.beforeTextByStep.set(step.stepNumber, before);
 
@@ -387,7 +396,16 @@ export class Orchestrator {
 
   /** Explain mode: navigate to the step's focus and render explanation-only (no diff). */
   private async activateExplainStep(step: OutlineStep): Promise<void> {
-    const nav = step.focus ?? { file: step.targetFiles[0] ?? '', startLine: 1, endLine: 1 };
+    const focus = step.focus ?? { file: step.targetFiles[0] ?? '', startLine: 1, endLine: 1 };
+    // Prefer the content-anchored location over the model's advisory line numbers.
+    if (focus.anchor) {
+      const content = await this.editor.readFile(focus.file);
+      const loc = content ? locateSnippet(content, focus.anchor) : undefined;
+      if (loc) {
+        step.focus = { ...focus, startLine: loc.startLine, endLine: loc.endLine };
+      }
+    }
+    const nav = step.focus ?? focus;
     await this.editor.navigateTo(nav.file, nav.startLine, nav.endLine);
     if (!this.dispatch({ type: 'NAV_DONE' })) {
       return;

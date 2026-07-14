@@ -96,6 +96,19 @@ export function findAnchor(fileText: string, h: AnchoredHunk): AnchorResult {
 }
 
 /**
+ * Locate a verbatim snippet in a file, returning a 1-based inclusive line range,
+ * or undefined if it isn't found uniquely. Used to anchor navigation/highlights
+ * to the real code instead of trusting the model's advisory line numbers.
+ */
+export function locateSnippet(fileText: string, snippet: string): { startLine: number; endLine: number } | undefined {
+  const r = findAnchor(fileText, { contextBefore: '', oldText: snippet, newText: '', contextAfter: '' });
+  if (r.status !== 'ok' || r.endLineExclusive <= r.startLine) {
+    return undefined;
+  }
+  return { startLine: r.startLine + 1, endLine: r.endLineExclusive };
+}
+
+/**
  * Apply every hunk against the ORIGINAL file (each anchored independently),
  * then splice from the bottom up so earlier edits don't shift later indices.
  * Overlapping regions are rejected. Preserves the file's dominant EOL.

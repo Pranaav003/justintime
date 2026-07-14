@@ -96,6 +96,8 @@ export interface StepNavigation {
   /** 1-based, inclusive, advisory (see design Section 4). */
   startLine: number;
   endLine: number;
+  /** Optional verbatim snippet; the extension locates it to anchor the highlight. */
+  anchor?: string;
 }
 
 /** The model's structured output for hydrating one step (hazards are added later by the orchestrator). */
