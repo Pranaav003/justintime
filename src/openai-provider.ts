@@ -63,12 +63,30 @@ const READ_FILES_TOOL = {
   },
 };
 
+const SEARCH_CODE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'search_code',
+    description:
+      'Search the codebase for a keyword or JS regex and get matching file:line results. ' +
+      'Use this to FIND relevant code before reading it (e.g. exception handling: search "except|raise|Error").',
+    parameters: {
+      type: 'object',
+      properties: { query: { type: 'string', description: 'A keyword or JavaScript regex.' } },
+      required: ['query'],
+    },
+  },
+};
+
+const TOOLS = [SEARCH_CODE_TOOL, READ_FILES_TOOL];
+
 const TOOL_PREAMBLE =
   'You are working through a VS Code extension and CANNOT browse the repository directly. ' +
-  'A file list is provided. Use the read_files tool to fetch the contents of files you need ' +
-  '(instead of Read/Glob/Grep) before producing your answer. Request paths EXACTLY as they ' +
-  'appear in the provided file list — do not invent directories or paths. When done exploring, ' +
-  'output the requested JSON only.';
+  'To FIND relevant code, call search_code with a keyword or regex (e.g. for exception handling, ' +
+  'search "except|raise|Error"); then call read_files to read the matching files. Request paths ' +
+  'EXACTLY as they appear in the file list or search results — do not invent paths, and never ' +
+  'describe code you have not actually read. Ground every statement in the file contents you fetched. ' +
+  'When done exploring, output the requested JSON only.';
 
 const MAX_TOOL_ROUNDS = 5;
 const MAX_FILES_PER_CALL = 15;
@@ -139,22 +157,47 @@ export class OpenAICompatibleProvider implements PlanProvider {
     return msg.content;
   }
 
-  /** Run read_files tool rounds until the model stops requesting files. */
+  /** Run search_code / read_files tool rounds until the model stops requesting them. */
   private async explore(messages: ChatMessage[], ctx: RepoContext): Promise<void> {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const msg = await this.chat(messages, { tools: [READ_FILES_TOOL], signal: ctx.signal });
+      // Force at least one tool call up front so weak models ground in real code
+      // before answering, instead of hallucinating.
+      const msg = await this.chat(messages, {
+        tools: TOOLS,
+        toolChoice: round === 0 ? 'required' : 'auto',
+        signal: ctx.signal,
+      });
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
         return;
       }
       messages.push({ role: 'assistant', content: msg.content, tool_calls: msg.tool_calls });
       for (const call of msg.tool_calls) {
-        const result =
-          call.function.name === 'read_files'
-            ? await this.serveReadFiles(call.function.arguments, ctx)
-            : `Unknown tool ${call.function.name}`;
+        let result: string;
+        if (call.function.name === 'read_files') {
+          result = await this.serveReadFiles(call.function.arguments, ctx);
+        } else if (call.function.name === 'search_code') {
+          result = await this.serveSearch(call.function.arguments, ctx);
+        } else {
+          result = `Unknown tool ${call.function.name}`;
+        }
         messages.push({ role: 'tool', tool_call_id: call.id, content: result });
       }
     }
+  }
+
+  private async serveSearch(argsJson: string, ctx: RepoContext): Promise<string> {
+    let query = '';
+    try {
+      const parsed = JSON.parse(argsJson || '{}') as { query?: unknown };
+      query = typeof parsed.query === 'string' ? parsed.query : '';
+    } catch {
+      return '(could not parse search_code arguments)';
+    }
+    if (!query) {
+      return '(empty query)';
+    }
+    ctx.onProgress?.(`Searching for “${query}”`);
+    return ctx.searchCode ? await ctx.searchCode(query) : '(search unavailable)';
   }
 
   private async serveReadFiles(argsJson: string, ctx: RepoContext): Promise<string> {
@@ -207,12 +250,12 @@ export class OpenAICompatibleProvider implements PlanProvider {
   /** One chat call; returns the assistant message content + any tool calls. */
   private async chat(
     messages: ChatMessage[],
-    opts: { tools?: unknown[]; json?: boolean; signal?: AbortSignal },
+    opts: { tools?: unknown[]; toolChoice?: 'auto' | 'required'; json?: boolean; signal?: AbortSignal },
   ): Promise<{ content: string; tool_calls?: ToolCall[] }> {
     const body: Record<string, unknown> = { model: this.model, messages, temperature: 0 };
     if (opts.tools) {
       body.tools = opts.tools;
-      body.tool_choice = 'auto';
+      body.tool_choice = opts.toolChoice ?? 'auto';
     }
     if (opts.json) {
       body.response_format = { type: 'json_object' };

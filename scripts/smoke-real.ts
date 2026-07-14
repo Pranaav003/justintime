@@ -16,14 +16,42 @@ async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'jit-smoke-'));
   const rel = 'stats.ts';
   const content =
+    'export class StatsError extends Error {}\n\n' +
     'export function average(nums: number[]): number {\n' +
+    "  if (nums.length === 0) throw new StatsError('empty input');\n" +
     '  let sum = 0;\n' +
     '  for (const n of nums) {\n' +
     '    sum += n;\n' +
     '  }\n' +
     '  return sum / nums.length;\n' +
+    '}\n\n' +
+    'export function safeAverage(nums: number[]): number {\n' +
+    '  try {\n' +
+    '    return average(nums);\n' +
+    '  } catch (e) {\n' +
+    "    console.error('average failed', e);\n" +
+    '    return 0;\n' +
+    '  }\n' +
     '}\n';
   writeFileSync(join(dir, rel), content);
+
+  // Grep the fixture so non-Claude providers can locate relevant code.
+  const searchCode = async (query: string): Promise<string> => {
+    let re: RegExp | undefined;
+    try {
+      re = new RegExp(query, 'i');
+    } catch {
+      re = undefined;
+    }
+    const out: string[] = [];
+    content.split('\n').forEach((line, i) => {
+      const hit = re ? re.test(line) : line.toLowerCase().includes(query.toLowerCase());
+      if (hit && out.length < 40) {
+        out.push(`${rel}:${i + 1}: ${line.trim()}`);
+      }
+    });
+    return out.length ? out.join('\n') : `(no matches for "${query}")`;
+  };
   console.log('workspace:', dir);
   console.log('problem: guard average() against an empty array\n');
 
@@ -58,15 +86,16 @@ async function main(): Promise<void> {
   const wtMode = process.env.JIT_SMOKE_WT_MODE === 'explain' ? 'explain' : 'solve';
   console.log(`=== produceOutline (real Claude, mode=${wtMode}) ===`);
   const t0 = Date.now();
-  const problem =
-    wtMode === 'explain'
+  const problem = process.env.JIT_SMOKE_Q ||
+    (wtMode === 'explain'
       ? 'How does average() compute its result, and what happens when the input array is empty?'
-      : 'Guard average() against an empty array so it returns 0 instead of NaN.';
+      : 'Guard average() against an empty array so it returns 0 instead of NaN.');
   const outline = await provider.produceOutline(problem, {
     workspaceRoot: dir,
     mode: wtMode,
     repoMap: [rel],
     readFile,
+    searchCode,
     onProgress: (t) => console.log('  …', t),
   });
   console.log(`(${((Date.now() - t0) / 1000).toFixed(1)}s)`);

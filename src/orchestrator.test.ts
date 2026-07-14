@@ -56,6 +56,9 @@ class FakeEditor implements EditorPort {
   async listFiles(): Promise<string[]> {
     return Object.keys(this.files).sort();
   }
+  async searchCode(): Promise<string> {
+    return '';
+  }
   async navigateTo(relPath: string, startLine: number): Promise<void> {
     this.navigated.push({ file: relPath, startLine });
   }

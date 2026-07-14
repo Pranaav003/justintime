@@ -15,6 +15,7 @@ import type { RevertResult } from './rollback-store';
 
 export interface EditorPort {
   listFiles(): Promise<string[]>;
+  searchCode(query: string): Promise<string>;
   navigateTo(relPath: string, startLine: number, endLine: number): Promise<void>;
   showDiff(title: string, relPath: string, before: string, after: string): Promise<void>;
   applyStep(step: HydratedStep): Promise<ApplyOutcome>;
@@ -154,6 +155,7 @@ export class Orchestrator {
             onProgress: (t) => this.panel.showProgress(t),
             repoMap,
             readFile: (p) => this.editor.readFile(p),
+            searchCode: (q) => this.editor.searchCode(q),
           }),
         () => this.panel.showProgress('Still working on a large codebase… you can Cancel, or start again with a narrower question.'),
       );
@@ -582,6 +584,7 @@ export class Orchestrator {
         workspaceRoot: this.opts.workspaceRoot,
         signal: ac.signal,
         readFile: (p) => this.editor.readFile(p),
+        searchCode: (q) => this.editor.searchCode(q),
       });
       entry.answer = answer;
       this.panel.postAnswer(id, answer);

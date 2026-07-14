@@ -89,6 +89,38 @@ export class EditorBridge implements vscode.Disposable {
     return uris.map((u) => vscode.workspace.asRelativePath(u, false)).sort();
   }
 
+  /** Grep the workspace (repo-map files) for a keyword/regex; returns file:line matches. */
+  async searchCode(query: string): Promise<string> {
+    let re: RegExp | undefined;
+    try {
+      re = new RegExp(query, 'i');
+    } catch {
+      re = undefined;
+    }
+    const needle = query.toLowerCase();
+    const matches = (line: string): boolean => (re ? re.test(line) : line.toLowerCase().includes(needle));
+
+    const files = await this.listFiles();
+    const out: string[] = [];
+    const MAX = 40;
+    for (const rel of files) {
+      if (out.length >= MAX) {
+        break;
+      }
+      const content = await this.readFile(rel);
+      if (content === undefined) {
+        continue;
+      }
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length && out.length < MAX; i++) {
+        if (matches(lines[i]!)) {
+          out.push(`${rel}:${i + 1}: ${lines[i]!.trim().slice(0, 200)}`);
+        }
+      }
+    }
+    return out.length > 0 ? out.join('\n') : `(no matches for "${query}")`;
+  }
+
   /** Current content of a workspace-relative file, or undefined if it does not exist. */
   async readFile(relPath: string): Promise<string | undefined> {
     try {

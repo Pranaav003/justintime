@@ -20,6 +20,8 @@ export interface RepoContext {
   repoMap?: string[];
   /** Reads a workspace-relative file — used by providers that lack built-in file tools. */
   readFile?: (relPath: string) => Promise<string | undefined>;
+  /** Greps the workspace for a keyword/regex — used by providers that lack a search tool. */
+  searchCode?: (query: string) => Promise<string>;
 }
 
 export interface SessionCtx {

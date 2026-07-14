@@ -88,6 +88,26 @@ describe('OpenAICompatibleProvider.produceOutline', () => {
     expect((bodies[2] as { response_format?: { type: string } }).response_format?.type).toBe('json_object');
   });
 
+  it('serves search_code before producing the outline', async () => {
+    const searched: string[] = [];
+    const { fn } = fakeFetch([
+      { choices: [{ message: { content: '', tool_calls: [{ id: 's1', type: 'function', function: { name: 'search_code', arguments: '{"query":"except|raise"}' } }] } }] },
+      { choices: [{ message: { content: 'found it' } }] },
+      { choices: [{ message: { content: JSON.stringify(validOutlinePayload) } }] },
+    ]);
+    const provider = new OpenAICompatibleProvider({ baseUrl: 'http://x/v1', apiKey: 'k', model: 'm', label: 'Test', fetchFn: fn });
+    const outline = await provider.produceOutline('how are errors handled', {
+      workspaceRoot: '/repo',
+      mode: 'explain',
+      searchCode: async (q) => {
+        searched.push(q);
+        return 'a.ts:5: raise ValueError("x")';
+      },
+    });
+    expect(searched).toEqual(['except|raise']);
+    expect(outline.steps).toHaveLength(1);
+  });
+
   it('retries once when the first JSON is invalid', async () => {
     const { provider } = makeProvider([
       { choices: [{ message: { content: 'ready' } }] }, // explore: no tool calls
