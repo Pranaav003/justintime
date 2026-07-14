@@ -75,6 +75,25 @@ async function defaultProvider(maxSteps: number): Promise<PlanProvider> {
   });
 }
 
+/** List models an OpenAI-compatible endpoint advertises via GET /models (empty on failure). */
+async function fetchModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  try {
+    const resp = await fetch(`${baseUrl.replace(/\/+$/, '')}/models`, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    });
+    if (!resp.ok) {
+      return [];
+    }
+    const data = (await resp.json()) as { data?: { id?: unknown }[] };
+    return (data.data ?? [])
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === 'string')
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 /** Resolve the `claude` CLI: explicit setting, else the first match on PATH. */
 function resolveClaudeExecutable(configured?: string): string | undefined {
   if (configured) {
@@ -287,11 +306,30 @@ async function setApiKey(): Promise<void> {
   // For Ollama a blank key is fine; store whatever was entered (possibly empty).
   await extContext.secrets.store(`justintime.key.${pick.id}`, key ?? '');
 
-  const model = await vscode.window.showInputBox({
-    prompt: `Model name for ${preset.label}`,
-    value: preset.defaultModel,
-    ignoreFocusOut: true,
-  });
+  // Offer models to pick from instead of forcing the user to type (and typo) one.
+  const curatedOpenAI = ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini', 'o4-mini'];
+  const candidates = pick.id === 'openai' ? curatedOpenAI : await fetchModels(baseUrl, key ?? '');
+  let model: string | undefined;
+  if (candidates.length > 0) {
+    const OTHER = '$(edit) Other… (type a name)';
+    const chosen = await vscode.window.showQuickPick([...candidates, OTHER], {
+      title: `${preset.label} — choose a model`,
+      placeHolder: candidates.length === curatedOpenAI.length && pick.id === 'openai' ? 'Common models' : 'Installed models',
+    });
+    if (!chosen) {
+      return;
+    }
+    model =
+      chosen === OTHER
+        ? await vscode.window.showInputBox({ prompt: `Model name for ${preset.label}`, value: preset.defaultModel, ignoreFocusOut: true })
+        : chosen;
+  } else {
+    model = await vscode.window.showInputBox({
+      prompt: `Model name for ${preset.label} (couldn't list models from ${baseUrl})`,
+      value: preset.defaultModel,
+      ignoreFocusOut: true,
+    });
+  }
   if (model) {
     await cfg.update('model', model, G);
   }
