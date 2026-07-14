@@ -108,6 +108,14 @@ export function activate(context: vscode.ExtensionContext): JustInTimeApi {
     vscode.commands.registerCommand('justintime.setApiKey', () => void setApiKey()),
   );
 
+  // A one-click launcher in the status bar so you don't need the Command Palette.
+  const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+  status.text = '$(compass) JustInTime';
+  status.tooltip = 'Start a JustInTime walkthrough (⌘⌥J / Ctrl+Alt+J)';
+  status.command = 'justintime.start';
+  status.show();
+  context.subscriptions.push(status);
+
   return {
     setProviderFactory: (factory) => {
       providerFactory = factory;

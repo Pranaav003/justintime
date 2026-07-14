@@ -257,6 +257,10 @@ export class OpenAICompatibleProvider implements PlanProvider {
         }
       }
     }
-    throw new Error(`${this.label}: model did not return schema-valid JSON (${lastErr instanceof Error ? lastErr.message : String(lastErr)})`);
+    // Keep the raw validation detail in the extension log, but show the user a concise hint.
+    console.error(`[JustInTime] ${this.label} structured-output failure:`, lastErr);
+    throw new Error(
+      `${this.label} (${this.model}) didn't return a valid plan. Smaller local models often struggle with structured output — try Explain mode, or a more capable model.`,
+    );
   }
 }

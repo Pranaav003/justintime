@@ -43,8 +43,14 @@ function repoMapSection(repoMap?: string[]): string {
   );
 }
 
+const OUTLINE_SHAPE =
+  '\n\nReturn JSON of exactly this shape (problemSummary and steps are required):\n' +
+  '{"problemSummary":"one sentence","steps":[{"stepNumber":1,"title":"short title",' +
+  '"targetFiles":["relative/path.ts"],"changeKind":"edit","genericExplanation":"the pattern/concept",' +
+  '"specificExplanation":"why it matters in this code"}]}';
+
 export function buildOutlinePrompt(problem: string, maxSteps: number, repoMap?: string[]): string {
-  return `Problem to walk through:\n${problem}\n\nProduce an ordered outline of at most ${maxSteps} steps.${repoMapSection(repoMap)}`;
+  return `Problem to walk through:\n${problem}\n\nProduce an ordered outline of at most ${maxSteps} steps.${OUTLINE_SHAPE}${repoMapSection(repoMap)}`;
 }
 
 /** Appended to the preset for EXPLAIN mode — read-only, no code changes proposed. */
@@ -60,8 +66,14 @@ Rules:
 - Be efficient: do NOT read or search node_modules, dist, build outputs, .git, or lockfiles. Explore only the source files you actually need — don't crawl the whole tree.
 - Return ONLY the structured outline object.`;
 
+const EXPLAIN_SHAPE =
+  '\n\nReturn JSON of exactly this shape (problemSummary and steps are required):\n' +
+  '{"problemSummary":"one sentence","steps":[{"stepNumber":1,"title":"short title",' +
+  '"targetFiles":["relative/path.ts"],"focus":{"file":"relative/path.ts","startLine":1,"endLine":10},' +
+  '"genericExplanation":"the concept","specificExplanation":"how it works here"}]}';
+
 export function buildExplainPrompt(question: string, maxSteps: number, repoMap?: string[]): string {
-  return `Explain the following, walking through the relevant code:\n${question}\n\nProduce an ordered explanation of at most ${maxSteps} steps, each with a focus location. Propose no changes.${repoMapSection(repoMap)}`;
+  return `Explain the following, walking through the relevant code:\n${question}\n\nProduce an ordered explanation of at most ${maxSteps} steps, each with a focus location. Propose no changes.${EXPLAIN_SHAPE}${repoMapSection(repoMap)}`;
 }
 
 /** Appended to the preset for the mid-step chat — read-only Q&A about the current step. */
