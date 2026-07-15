@@ -14,6 +14,7 @@ Rules:
 - Do NOT include diffs, code bodies, or exact line numbers in the outline — only titles, target files, dependency edges (dependsOn), changeKind, and the two explanations. Concrete diffs are generated later, per step, against the live file.
 - genericExplanation: teach the pattern/principle/language feature as if to a competent developer who is new to this codebase; name the pattern.
 - specificExplanation: reference actual file paths and real function/variable names in THIS codebase, plus downstream effects.
+- GROUND EVERYTHING in code you actually read. Never invent classes, functions, methods, or features. If the requested change does not fit this codebase, say so in problemSummary rather than fabricating steps.
 - Be efficient: do NOT read or search node_modules, dist, build outputs, .git, or lockfiles. Explore only the source files you actually need — don't crawl the whole tree.
 - Return ONLY the structured outline object.`;
 
@@ -63,6 +64,7 @@ Rules:
 - genericExplanation: the general pattern/concept/language feature at play, taught to a competent developer new to this codebase; name it.
 - specificExplanation: how it works HERE — reference real function/variable names, call chains, and effects in this codebase.
 - Do NOT propose edits, fixes, or diffs. If the reader asked "how/why", answer by explaining the existing code, not by changing it.
+- GROUND EVERYTHING in code you actually read via the tools. Never invent classes, functions, methods, or features. If the thing being asked about does NOT exist in this codebase, say so plainly in problemSummary and briefly state what the code you read ACTUALLY does (describe the real code — do not copy this instruction's wording). Keep steps to what the code actually does; do not fabricate to fill the outline.
 - Be efficient: do NOT read or search node_modules, dist, build outputs, .git, or lockfiles. Explore only the source files you actually need — don't crawl the whole tree.
 - Return ONLY the structured outline object.`;
 
@@ -78,7 +80,7 @@ export function buildExplainPrompt(question: string, maxSteps: number, repoMap?:
 }
 
 /** Appended to the preset for the mid-step chat — read-only Q&A about the current step. */
-export const CHAT_SYSTEM_APPEND = `You are answering a developer's follow-up question during a JustInTime walkthrough. This is READ-ONLY: do not propose or make any code changes. Answer concisely and accurately about the code. You may read files (Read/Glob/Grep) to answer, but do not crawl node_modules, dist, build outputs, or .git. Reply in GitHub-flavored markdown.`;
+export const CHAT_SYSTEM_APPEND = `You are answering a developer's follow-up question during a JustInTime walkthrough. This is READ-ONLY: do not propose or make any code changes. Answer concisely and accurately about the code, grounding EVERY statement in code you actually read — never invent classes, methods, or features. If the thing being asked about does not exist in this codebase, say so plainly rather than fabricating. You may read files (Read/Glob/Grep), but do not crawl node_modules, dist, build outputs, or .git. Reply in GitHub-flavored markdown.`;
 
 export function buildChatPrompt(contextText: string, question: string): string {
   return `Context for the current walkthrough step:\n${contextText}\n\nThe developer asks:\n${question}`;
