@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { OpenAICompatibleProvider, resolvePath, extractJson, type FetchFn } from './openai-provider';
+import { OpenAICompatibleProvider, resolvePath, extractJson, detectTextToolCall, type FetchFn } from './openai-provider';
 import type { OutlineStep } from './types';
 
 /** A scripted fake fetch: returns queued chat-completion responses in order. */
@@ -234,6 +234,24 @@ describe('OpenAICompatibleProvider tool loop + JSON', () => {
   });
 });
 
+describe('detectTextToolCall', () => {
+  it('recognizes a fenced JSON tool call for a known tool', () => {
+    const call = detectTextToolCall('```json\n{"name":"search_code","arguments":{"query":"divide"}}\n```');
+    expect(call?.function.name).toBe('search_code');
+    expect(JSON.parse(call!.function.arguments)).toEqual({ query: 'divide' });
+  });
+  it('serializes object arguments to a JSON string and accepts "parameters"', () => {
+    const call = detectTextToolCall('{"name":"read_files","parameters":{"paths":["a.ts"]}}');
+    expect(call?.function.name).toBe('read_files');
+    expect(JSON.parse(call!.function.arguments)).toEqual({ paths: ['a.ts'] });
+  });
+  it('ignores prose and JSON for unknown tools', () => {
+    expect(detectTextToolCall('just a plain english answer')).toBeUndefined();
+    expect(detectTextToolCall('{"name":"launch_missiles","arguments":{}}')).toBeUndefined();
+    expect(detectTextToolCall('{"summary":"no name field"}')).toBeUndefined();
+  });
+});
+
 describe('OpenAICompatibleProvider.answerQuestion', () => {
   it('returns the final non-tool message as the answer', async () => {
     const { provider } = makeProvider([
@@ -242,6 +260,41 @@ describe('OpenAICompatibleProvider.answerQuestion', () => {
     ]);
     const answer = await provider.answerQuestion('why?', 'ctx', { workspaceRoot: '/repo' });
     expect(answer).toBe('The answer is 42.');
+  });
+
+  it('executes a tool call emitted as plain-text JSON, then returns prose (regression)', async () => {
+    const searched: string[] = [];
+    const { provider } = makeProvider([
+      // weak-model shape: tool call as fenced JSON in content, no tool_calls array
+      { choices: [{ message: { content: '```json\n{"name":"search_code","arguments":{"query":"divide"}}\n```' } }] },
+      { choices: [{ message: { content: 'Dividing by zero yields NaN because JS uses IEEE-754 floats.' } }] },
+    ]);
+    const answer = await provider.answerQuestion('why NaN?', 'ctx', {
+      workspaceRoot: '/r',
+      searchCode: async (q) => {
+        searched.push(q);
+        return 'stats.ts:8: return sum / nums.length;';
+      },
+    });
+    expect(searched).toEqual(['divide']); // the text tool call was actually executed
+    expect(answer).toContain('IEEE-754'); // and the grounded prose is returned, not the JSON
+  });
+
+  it('forces a tools-off prose answer when the loop keeps emitting tool-call JSON (regression)', async () => {
+    const toolText = { choices: [{ message: { content: '{"name":"search_code","arguments":{"query":"x"}}' } }] };
+    // 5 rounds all emit the same text tool call (search unavailable), then a final tools-off call.
+    const { provider, bodies } = makeProvider([
+      toolText,
+      toolText,
+      toolText,
+      toolText,
+      toolText,
+      { choices: [{ message: { content: 'Plain prose answer grounded in what was found.' } }] },
+    ]);
+    const answer = await provider.answerQuestion('q', 'ctx', { workspaceRoot: '/r' }); // no searchCode
+    expect(answer).toBe('Plain prose answer grounded in what was found.');
+    // the final fallback call must NOT offer tools (forces prose, not another tool call)
+    expect((bodies.at(-1) as { tools?: unknown[] }).tools).toBeUndefined();
   });
 
   it('surfaces a non-OK HTTP response as an error', async () => {

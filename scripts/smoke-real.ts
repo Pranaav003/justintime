@@ -153,7 +153,7 @@ async function main(): Promise<void> {
       const answer = await provider.answerQuestion!(
         'Why does dividing by zero here produce NaN rather than throwing?',
         `Walkthrough step 1: ${step.title}`,
-        { workspaceRoot: dir, readFile },
+        { workspaceRoot: dir, readFile, searchCode }, // mirror the extension's editor bridge
       );
       console.log('answer (first 200 chars):', JSON.stringify(answer.slice(0, 200)));
       console.log(answer.length > 0 ? 'CHAT OK: free-text answer returned.' : 'WARN: empty answer');

@@ -1,5 +1,5 @@
 {
-  "passingTests": 150,
+  "passingTests": 155,
   "performance": {
     "findAnchor_1000L_ms": 0.5,
     "applyHunks_1000L_ms": 0.5,

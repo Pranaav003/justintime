@@ -101,6 +101,37 @@ export function extractJson(text: string): unknown {
   return JSON.parse(slice);
 }
 
+const KNOWN_TOOL_NAMES = TOOLS.map((t) => t.function.name);
+
+/**
+ * Weak local models often emit a tool call as JSON *text* in `content`
+ * (e.g. `{"name":"search_code","arguments":{"query":"x"}}`) instead of the
+ * structured `tool_calls` array. Recognize that shape so we execute the tool
+ * and ground the answer, rather than handing the raw JSON back to the user.
+ */
+export function detectTextToolCall(content: string): ToolCall | undefined {
+  if (!content || !content.includes('{')) {
+    return undefined;
+  }
+  let obj: unknown;
+  try {
+    obj = extractJson(content);
+  } catch {
+    return undefined;
+  }
+  if (!obj || typeof obj !== 'object') {
+    return undefined;
+  }
+  const rec = obj as Record<string, unknown>;
+  const name = typeof rec.name === 'string' ? rec.name : undefined;
+  if (!name || !KNOWN_TOOL_NAMES.includes(name)) {
+    return undefined;
+  }
+  const rawArgs = rec.arguments ?? rec.parameters ?? {};
+  const args = typeof rawArgs === 'string' ? rawArgs : JSON.stringify(rawArgs);
+  return { id: `text-${name}`, type: 'function', function: { name, arguments: args } };
+}
+
 /** Map a possibly-approximate requested path to a real one from the repo map. */
 export function resolvePath(requested: string, repoMap?: string[]): string | undefined {
   if (!repoMap || repoMap.length === 0) {
@@ -175,7 +206,26 @@ export class OpenAICompatibleProvider implements PlanProvider {
     ];
     // The final non-tool message from the explore loop IS the answer — no extra
     // call (which would drop tools and make the model emit "let me search…" prose).
-    return this.explore(messages, ctx);
+    const answer = await this.explore(messages, ctx);
+    // Weak models sometimes end on a text-embedded tool call (or empty content)
+    // instead of prose. If so, force one tools-off completion so the user gets a
+    // grounded natural-language answer rather than raw JSON. `messages` now holds
+    // the full tool transcript (explore mutates it), so this call has context.
+    if (!answer.trim() || detectTextToolCall(answer)) {
+      const finalMsg = await this.chat(
+        [
+          ...messages,
+          {
+            role: 'user',
+            content:
+              'Now answer the question in plain prose based on what you found above. Do not call any tools or output JSON.',
+          },
+        ],
+        { signal: ctx.signal },
+      );
+      return finalMsg.content.trim() || answer;
+    }
+    return answer;
   }
 
   /** Run search_code / read_files tool rounds; returns the final non-tool assistant text. */
@@ -190,11 +240,19 @@ export class OpenAICompatibleProvider implements PlanProvider {
         signal: ctx.signal,
       });
       lastContent = msg.content;
-      if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        return lastContent;
+      let toolCalls = msg.tool_calls;
+      if (!toolCalls || toolCalls.length === 0) {
+        // Fall back to a text-embedded tool call (weak-model shape) before giving up.
+        const textCall = detectTextToolCall(msg.content);
+        if (!textCall) {
+          return lastContent;
+        }
+        toolCalls = [textCall];
       }
-      messages.push({ role: 'assistant', content: msg.content, tool_calls: msg.tool_calls });
-      for (const call of msg.tool_calls) {
+      const fromTextCall = toolCalls !== msg.tool_calls;
+      // For a synthesized call, blank the content so the model doesn't re-see its own JSON.
+      messages.push({ role: 'assistant', content: fromTextCall ? '' : msg.content, tool_calls: toolCalls });
+      for (const call of toolCalls) {
         let result: string;
         if (call.function.name === 'read_files') {
           result = await this.serveReadFiles(call.function.arguments, ctx);
