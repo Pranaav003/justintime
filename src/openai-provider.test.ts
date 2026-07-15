@@ -136,9 +136,9 @@ describe('OpenAICompatibleProvider.hydrateStep', () => {
 });
 
 describe('OpenAICompatibleProvider.answerQuestion', () => {
-  it('returns free-text after exploration', async () => {
+  it('returns the final non-tool message as the answer', async () => {
     const { provider } = makeProvider([
-      { choices: [{ message: { content: '' } }] }, // explore: no tool calls
+      // explore's first message has no tool calls, so its content is the answer
       { choices: [{ message: { content: 'The answer is 42.' } }] },
     ]);
     const answer = await provider.answerQuestion('why?', 'ctx', { workspaceRoot: '/repo' });

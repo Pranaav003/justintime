@@ -152,13 +152,14 @@ export class OpenAICompatibleProvider implements PlanProvider {
       { role: 'system', content: `${TOOL_PREAMBLE}\n\n${CHAT_SYSTEM_APPEND}` },
       { role: 'user', content: buildChatPrompt(contextText, question) },
     ];
-    await this.explore(messages, ctx);
-    const msg = await this.chat(messages, { signal: ctx.signal });
-    return msg.content;
+    // The final non-tool message from the explore loop IS the answer — no extra
+    // call (which would drop tools and make the model emit "let me search…" prose).
+    return this.explore(messages, ctx);
   }
 
-  /** Run search_code / read_files tool rounds until the model stops requesting them. */
-  private async explore(messages: ChatMessage[], ctx: RepoContext): Promise<void> {
+  /** Run search_code / read_files tool rounds; returns the final non-tool assistant text. */
+  private async explore(messages: ChatMessage[], ctx: RepoContext): Promise<string> {
+    let lastContent = '';
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
       // Force at least one tool call up front so weak models ground in real code
       // before answering, instead of hallucinating.
@@ -167,8 +168,9 @@ export class OpenAICompatibleProvider implements PlanProvider {
         toolChoice: round === 0 ? 'required' : 'auto',
         signal: ctx.signal,
       });
+      lastContent = msg.content;
       if (!msg.tool_calls || msg.tool_calls.length === 0) {
-        return;
+        return lastContent;
       }
       messages.push({ role: 'assistant', content: msg.content, tool_calls: msg.tool_calls });
       for (const call of msg.tool_calls) {
@@ -183,6 +185,7 @@ export class OpenAICompatibleProvider implements PlanProvider {
         messages.push({ role: 'tool', tool_call_id: call.id, content: result });
       }
     }
+    return lastContent; // hit the round cap; return whatever we last got
   }
 
   private async serveSearch(argsJson: string, ctx: RepoContext): Promise<string> {
