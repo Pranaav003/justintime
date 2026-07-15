@@ -99,6 +99,55 @@ describe('RollbackStore', () => {
     expect(result.deleted).toBe(0);
   });
 
+  it('records an error when a snapshot file is missing at revert time', async () => {
+    const fs = new MemFs();
+    fs.files.set('/repo/a.ts', 'v0');
+    const store = new RollbackStore(fs, BASE, SID);
+    await store.snapshotBeforeApply(1, '/repo/a.ts');
+    for (const k of [...fs.files.keys()]) {
+      if (k.endsWith('.snap')) {
+        fs.files.delete(k); // simulate a lost snapshot
+      }
+    }
+    const result = await store.revertAll();
+    expect(result.restored).toBe(0);
+    expect(result.errors.length).toBe(1);
+  });
+
+  it('load() reconstructs seq so new snapshots do not collide', async () => {
+    const fs = new MemFs();
+    fs.files.set('/repo/a.ts', 'v0');
+    const s1 = new RollbackStore(fs, BASE, SID);
+    await s1.snapshotBeforeApply(1, '/repo/a.ts'); // writes 0.snap
+
+    const s2 = new RollbackStore(fs, BASE, SID);
+    await s2.load();
+    fs.files.set('/repo/b.ts', 'w0');
+    await s2.snapshotBeforeApply(2, '/repo/b.ts'); // must be 1.snap, not clobber 0.snap
+    const snaps = [...fs.files.keys()].filter((k) => k.endsWith('.snap'));
+    expect(snaps.length).toBe(2);
+  });
+
+  it('revertAll catches a failing remove and records it', async () => {
+    const fs = new MemFs();
+    const store = new RollbackStore(fs, BASE, SID);
+    await store.snapshotBeforeApply(1, '/repo/created.ts'); // did not exist -> create step
+    await fs.write('/repo/created.ts', 'new');
+    fs.remove = async () => {
+      throw new Error('EPERM');
+    };
+    const result = await store.revertAll();
+    expect(result.errors.length).toBe(1);
+  });
+
+  it('load() on a corrupt index starts fresh instead of throwing', async () => {
+    const fs = new MemFs();
+    fs.files.set('/storage/snapshots/sess-1/index.json', '{ this is not json');
+    const store = new RollbackStore(fs, BASE, SID);
+    await store.load(); // must not throw
+    expect(store.hasSnapshots()).toBe(false);
+  });
+
   it('reports hasSnapshots', async () => {
     const fs = new MemFs();
     fs.files.set('/repo/a.ts', 'x');

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { OpenAICompatibleProvider, type FetchFn } from './openai-provider';
+import { OpenAICompatibleProvider, resolvePath, extractJson, type FetchFn } from './openai-provider';
 import type { OutlineStep } from './types';
 
 /** A scripted fake fetch: returns queued chat-completion responses in order. */
@@ -59,6 +59,39 @@ function makeProvider(responses: unknown[]) {
   });
   return { provider, bodies };
 }
+
+describe('resolvePath', () => {
+  const map = ['src/stats.ts', 'src/utils/format.ts', 'README.md', 'src/a.ts', 'test/a.ts'];
+  it('returns the path as-is when there is no repo map', () => {
+    expect(resolvePath('anything.ts', undefined)).toBe('anything.ts');
+    expect(resolvePath('anything.ts', [])).toBe('anything.ts');
+  });
+  it('returns an exact match', () => {
+    expect(resolvePath('src/stats.ts', map)).toBe('src/stats.ts');
+  });
+  it('resolves a unique suffix match', () => {
+    expect(resolvePath('stats.ts', map)).toBe('src/stats.ts');
+    expect(resolvePath('utils/format.ts', map)).toBe('src/utils/format.ts');
+  });
+  it('resolves a unique basename match', () => {
+    expect(resolvePath('format.ts', map)).toBe('src/utils/format.ts');
+  });
+  it('returns undefined for an ambiguous basename (a.ts appears twice)', () => {
+    expect(resolvePath('a.ts', map)).toBeUndefined();
+  });
+});
+
+describe('extractJson', () => {
+  it('unwraps a fenced json block', () => {
+    expect(extractJson('```json\n{"a":1}\n```')).toEqual({ a: 1 });
+  });
+  it('strips leading/trailing prose via brace scanning', () => {
+    expect(extractJson('Here you go: {"a":2} — done')).toEqual({ a: 2 });
+  });
+  it('parses a bare object', () => {
+    expect(extractJson('{"a":3}')).toEqual({ a: 3 });
+  });
+});
 
 describe('OpenAICompatibleProvider.produceOutline', () => {
   it('runs the read_files tool loop then returns a parsed outline', async () => {
@@ -132,6 +165,72 @@ describe('OpenAICompatibleProvider.hydrateStep', () => {
     const step = await provider.hydrateStep(outlineStep, { 'a.ts': 'x' }, { sessionId: 's', workspaceRoot: '/repo' });
     expect(step.hazards).toEqual([]);
     expect(step.hunks).toHaveLength(1);
+  });
+});
+
+describe('OpenAICompatibleProvider tool loop + JSON', () => {
+  const toolCall = (name: string, args: string) => ({
+    choices: [{ message: { content: '', tool_calls: [{ id: 't', type: 'function', function: { name, arguments: args } }] } }],
+  });
+  const done = { choices: [{ message: { content: 'done' } }] };
+  const jsonOut = { choices: [{ message: { content: JSON.stringify(validOutlinePayload) } }] };
+
+  it('throws a friendly error when structured output fails twice', async () => {
+    const { provider } = makeProvider([done, { choices: [{ message: { content: 'not json' } }] }, { choices: [{ message: { content: 'still not json' } }] }]);
+    await expect(provider.produceOutline('p', { workspaceRoot: '/r', mode: 'solve' })).rejects.toThrow(/didn't return a valid plan/);
+  });
+
+  it('exits the tool loop after MAX_TOOL_ROUNDS and still produces output', async () => {
+    const t = toolCall('search_code', '{"query":"x"}');
+    const { provider } = makeProvider([t, t, t, t, t, jsonOut]);
+    const outline = await provider.produceOutline('p', { workspaceRoot: '/r', mode: 'solve', searchCode: async () => 'x:1: y' });
+    expect(outline.steps).toHaveLength(1);
+  });
+
+  it('handles an unknown tool call without crashing', async () => {
+    const { provider } = makeProvider([toolCall('mystery', '{}'), done, jsonOut]);
+    const outline = await provider.produceOutline('p', { workspaceRoot: '/r', mode: 'solve' });
+    expect(outline.steps).toHaveLength(1);
+  });
+
+  it('read_files resolves a fuzzy path to the real file', async () => {
+    const read: string[] = [];
+    const { provider } = makeProvider([toolCall('read_files', '{"paths":["stats.ts"]}'), done, jsonOut]);
+    await provider.produceOutline('p', {
+      workspaceRoot: '/r',
+      mode: 'solve',
+      repoMap: ['src/stats.ts'],
+      readFile: async (p) => {
+        read.push(p);
+        return 'content';
+      },
+    });
+    expect(read).toEqual(['src/stats.ts']);
+  });
+
+  it('search_code with an empty query does not call searchCode', async () => {
+    let called = 0;
+    const { provider } = makeProvider([toolCall('search_code', '{"query":""}'), done, jsonOut]);
+    await provider.produceOutline('p', {
+      workspaceRoot: '/r',
+      mode: 'solve',
+      searchCode: async () => {
+        called++;
+        return 'x';
+      },
+    });
+    expect(called).toBe(0);
+  });
+
+  it('hydrateStep defaults primaryFile from the outline step', async () => {
+    const payload = {
+      changeKind: 'edit',
+      hunks: [{ contextBefore: 'a', oldText: 'b', newText: 'c', contextAfter: 'd' }],
+      navigation: { file: 'x', startLine: 1, endLine: 1 },
+    };
+    const { provider } = makeProvider([{ choices: [{ message: { content: JSON.stringify(payload) } }] }]);
+    const step = await provider.hydrateStep(outlineStep, { 'a.ts': 'x' }, { sessionId: 's', workspaceRoot: '/r' });
+    expect(step.primaryFile).toBe('a.ts');
   });
 });
 

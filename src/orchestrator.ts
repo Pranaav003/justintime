@@ -50,6 +50,8 @@ export interface OrchestratorOptions {
   showPrerequisites?: boolean;
   /** Hard-abort analysis/hydration after this many seconds. 0 = never (Cancel only). */
   analysisTimeoutSeconds?: number;
+  /** Structured logger (timestamp/type/stack). No-op if omitted. */
+  log?: (level: 'error' | 'warn' | 'info', message: string, error?: unknown) => void;
 }
 
 function errMsg(e: unknown): string {
@@ -163,6 +165,7 @@ export class Orchestrator {
       if (this.cancelled) {
         return; // cancel() already reset the panel
       }
+      this.opts.log?.('error', `Analysis failed (mode=${mode})`, e);
       this.panel.showIdle(
         this.timedOut
           ? 'Analysis timed out. Try a narrower question or open a smaller folder, then start again.'
@@ -272,6 +275,7 @@ export class Orchestrator {
         this.panel.showIdle(`Step ${step.stepNumber} timed out. Start again with a narrower scope.`);
         return;
       }
+      this.opts.log?.('error', `Hydrate failed for step ${step.stepNumber}`, e);
       this.dispatch({ type: 'HYDRATE_FAILED', message: errMsg(e) });
       this.panel.notifyError(`Could not prepare step ${step.stepNumber}: ${errMsg(e)}`);
       return;
@@ -423,6 +427,16 @@ export class Orchestrator {
   }
 
   private async handleMessage(msg: WebviewToHost): Promise<void> {
+    try {
+      await this.route(msg);
+    } catch (e) {
+      // Never let a webview message become an unhandled rejection.
+      this.opts.log?.('error', `Message handler failed: ${msg.type}`, e);
+      this.panel.notifyError('Something went wrong handling that action. See the JustInTime output log.');
+    }
+  }
+
+  private async route(msg: WebviewToHost): Promise<void> {
     switch (msg.type) {
       case 'ready':
         break;
@@ -482,12 +496,21 @@ export class Orchestrator {
     if (!this.dispatch({ type: 'APPLY' })) {
       return;
     }
-    await this.rollback.snapshotBeforeApply(step.stepNumber, this.absPath(hydrated.primaryFile));
-    if (hydrated.changeKind === 'rename' && hydrated.renameTo) {
-      await this.rollback.snapshotBeforeApply(step.stepNumber, this.absPath(hydrated.renameTo));
+    // Snapshot + apply can throw (fs/editor failure); never leave the machine
+    // stuck in 'applying' with an unhandled rejection.
+    let outcome: ApplyOutcome;
+    try {
+      await this.rollback.snapshotBeforeApply(step.stepNumber, this.absPath(hydrated.primaryFile));
+      if (hydrated.changeKind === 'rename' && hydrated.renameTo) {
+        await this.rollback.snapshotBeforeApply(step.stepNumber, this.absPath(hydrated.renameTo));
+      }
+      outcome = await this.editor.applyStep(hydrated);
+    } catch (e) {
+      this.opts.log?.('error', `Apply threw for step ${step.stepNumber}`, e);
+      this.dispatch({ type: 'APPLY_FAILED', message: errMsg(e) });
+      this.panel.notifyError(`Failed to apply step ${step.stepNumber}: ${errMsg(e)}`);
+      return;
     }
-
-    const outcome = await this.editor.applyStep(hydrated);
     if (outcome.status === 'applied') {
       if (!this.dispatch({ type: 'APPLY_DONE' })) {
         // Interrupted while applyStep was awaiting; the change is on disk but
@@ -503,6 +526,7 @@ export class Orchestrator {
       this.dispatch({ type: 'APPLY_FAILED', message: outcome.reason });
       this.panel.notifyConflict(step.stepNumber, outcome.reason);
     } else {
+      this.opts.log?.('error', `Apply failed for step ${step.stepNumber}`, new Error(outcome.message));
       this.dispatch({ type: 'APPLY_FAILED', message: outcome.message });
       this.panel.notifyError(`Failed to apply step ${step.stepNumber}: ${outcome.message}`);
     }

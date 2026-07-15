@@ -12,6 +12,7 @@ import { VscodeSnapshotFs } from './vscode-snapshot-fs';
 import type { PlanProvider } from './plan-source';
 import type { SessionState } from './state-machine';
 import type { WalkthroughMode } from './types';
+import { formatLogEntry, type LogLevel } from './logger';
 
 const SECRET_KEY = 'justintime.anthropicApiKey';
 
@@ -43,6 +44,12 @@ interface ActiveSession {
 
 let session: ActiveSession | undefined;
 let extContext: vscode.ExtensionContext;
+let output: vscode.OutputChannel | undefined;
+
+/** Structured log to the JustInTime output channel (timestamp/level/type/stack). */
+function log(level: LogLevel, message: string, error?: unknown): void {
+  output?.appendLine(formatLogEntry(level, message, error));
+}
 let providerFactory: ProviderFactory = (maxSteps) => defaultProvider(maxSteps);
 
 /** Construct the configured provider, resolving keys from SecretStorage. */
@@ -116,6 +123,9 @@ function resolveClaudeExecutable(configured?: string): string | undefined {
 
 export function activate(context: vscode.ExtensionContext): JustInTimeApi {
   extContext = context;
+  output = vscode.window.createOutputChannel('JustInTime');
+  context.subscriptions.push(output);
+  log('info', `JustInTime activated (v${context.extension?.packageJSON?.version ?? '?'})`);
   context.subscriptions.push(
     vscode.commands.registerCommand('justintime.start', () => void startCommand()),
     vscode.commands.registerCommand('justintime.explain', () => void startCommand('explain')),
@@ -206,6 +216,7 @@ async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<v
   try {
     provider = await providerFactory(maxSteps);
   } catch (err) {
+    log('error', 'Failed to initialize provider', err);
     void vscode.window.showErrorMessage(`JustInTime: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
@@ -224,6 +235,7 @@ async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<v
     maxSteps,
     showPrerequisites,
     analysisTimeoutSeconds: config.get<number>('analysisTimeoutSeconds', 600),
+    log,
   });
 
   session = { orchestrator, editor, panel };

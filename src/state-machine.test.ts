@@ -192,6 +192,81 @@ describe('pause / resume', () => {
   });
 });
 
+describe('illegal & edge transitions', () => {
+  it('START with totalSteps < 1 is rejected', () => {
+    expect(transition(initialState(), { type: 'START', totalSteps: 0 }).ok).toBe(false);
+  });
+
+  it('ERROR from an active phase sets error phase + message', () => {
+    const s = run([{ type: 'START', totalSteps: 1 }, { type: 'NAV_DONE' }]);
+    const r = transition(s, { type: 'ERROR', message: 'boom' });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.state.phase).toBe('error');
+      expect(r.state.errorMessage).toBe('boom');
+    }
+  });
+
+  it('RETRY from a non-error phase is illegal', () => {
+    const s = run([{ type: 'START', totalSteps: 1 }, { type: 'NAV_DONE' }, { type: 'HYDRATE_DONE' }]);
+    expect(transition(s, { type: 'RETRY' }).ok).toBe(false);
+  });
+
+  it('EXIT_REVIEW when not reviewing is illegal', () => {
+    const s = run([{ type: 'START', totalSteps: 1 }]);
+    expect(transition(s, { type: 'EXIT_REVIEW' }).ok).toBe(false);
+  });
+
+  it('REVIEW with an out-of-range step is rejected', () => {
+    const s = run([{ type: 'START', totalSteps: 2 }, { type: 'NAV_DONE' }, { type: 'HYDRATE_DONE' }, { type: 'SHOW_READY' }]);
+    expect(transition(s, { type: 'REVIEW', step: 9 }).ok).toBe(false);
+    expect(transition(s, { type: 'REVIEW', step: 0 }).ok).toBe(false);
+  });
+
+  it('ADVANCE from a non-confirmed/skipped phase is illegal', () => {
+    const s = run([{ type: 'START', totalSteps: 1 }, { type: 'NAV_DONE' }, { type: 'HYDRATE_DONE' }]);
+    expect(transition(s, { type: 'ADVANCE' }).ok).toBe(false);
+  });
+
+  it('FORCE_APPLY / REHYDRATE from a non-conflict phase are illegal', () => {
+    const s = run([{ type: 'START', totalSteps: 1 }, { type: 'NAV_DONE' }, { type: 'HYDRATE_DONE' }, { type: 'SHOW_READY' }]);
+    expect(transition(s, { type: 'FORCE_APPLY' }).ok).toBe(false);
+    expect(transition(s, { type: 'REHYDRATE' }).ok).toBe(false);
+  });
+
+  it('PAUSE from reviewing is illegal; REVIEW from paused is illegal', () => {
+    const reviewing = run([
+      { type: 'START', totalSteps: 2 },
+      { type: 'NAV_DONE' },
+      { type: 'HYDRATE_DONE' },
+      { type: 'SHOW_READY' },
+      { type: 'REVIEW', step: 1 },
+    ]);
+    expect(transition(reviewing, { type: 'PAUSE' }).ok).toBe(false);
+    const paused = run([
+      { type: 'START', totalSteps: 1 },
+      { type: 'NAV_DONE' },
+      { type: 'HYDRATE_DONE' },
+      { type: 'SHOW_READY' },
+      { type: 'PAUSE' },
+    ]);
+    expect(transition(paused, { type: 'REVIEW', step: 1 }).ok).toBe(false);
+  });
+
+  it('CONFLICT from a phase that cannot conflict (confirmed) is illegal', () => {
+    const s = run([
+      { type: 'START', totalSteps: 1 },
+      { type: 'NAV_DONE' },
+      { type: 'HYDRATE_DONE' },
+      { type: 'SHOW_READY' },
+      { type: 'APPLY' },
+      { type: 'APPLY_DONE' },
+    ]);
+    expect(s.phase).toBe('confirmed');
+    expect(transition(s, { type: 'CONFLICT' }).ok).toBe(false);
+  });
+});
+
 describe('review', () => {
   it('REVIEW a completed step then EXIT_REVIEW restores prior phase + currentStep', () => {
     const s = run([

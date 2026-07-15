@@ -1,0 +1,9 @@
+{
+  "passingTests": 150,
+  "performance": {
+    "findAnchor_1000L_ms": 0.5,
+    "applyHunks_1000L_ms": 0.5,
+    "locateSnippet_1000L_ms": 0.5,
+    "parseOutlinePayload_30_ms": 0.1
+  }
+}

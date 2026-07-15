@@ -121,6 +121,41 @@ describe('parseHydratedStep', () => {
     };
     expect(() => parseHydratedStep(bad)).toThrow(/requires renameTo/);
   });
+
+  it('throws when primaryFile is missing and no default is provided', () => {
+    const bad = { changeKind: 'edit', hunks: [{ contextBefore: 'a', oldText: 'b', newText: 'c', contextAfter: 'd' }] };
+    expect(() => parseHydratedStep(bad)).toThrow(/primaryFile/);
+  });
+
+  it('defaults primaryFile, stepNumber, and navigation from the outline step', () => {
+    const p = parseHydratedStep(
+      { changeKind: 'edit', hunks: [{ contextBefore: 'a', oldText: 'b', newText: 'c', contextAfter: 'd' }] },
+      { primaryFile: 'src/x.ts', stepNumber: 7 },
+    );
+    expect(p.primaryFile).toBe('src/x.ts');
+    expect(p.stepNumber).toBe(7);
+    expect(p.navigation).toEqual({ file: 'src/x.ts', startLine: 1, endLine: 1 });
+  });
+
+  it('defaults stepNumber to 1 when absent from payload and defaults', () => {
+    const p = parseHydratedStep({ changeKind: 'delete' }, { primaryFile: 'src/x.ts' });
+    expect(p.stepNumber).toBe(1);
+  });
+
+  it('coerces an unknown hydrated changeKind to edit', () => {
+    const p = parseHydratedStep({
+      primaryFile: 'x',
+      changeKind: 'frobnicate',
+      hunks: [{ contextBefore: 'a', oldText: 'b', newText: 'c', contextAfter: 'd' }],
+      navigation: { file: 'x', startLine: 1, endLine: 1 },
+    });
+    expect(p.changeKind).toBe('edit');
+  });
+
+  it("accepts a 'delete' step with no hunks", () => {
+    const p = parseHydratedStep({ primaryFile: 'x', changeKind: 'delete', navigation: { file: 'x', startLine: 1, endLine: 1 } });
+    expect(p.changeKind).toBe('delete');
+  });
 });
 
 describe('json schema exports', () => {

@@ -92,13 +92,34 @@ const MAX_TOOL_ROUNDS = 5;
 const MAX_FILES_PER_CALL = 15;
 const MAX_FILE_CHARS = 20_000;
 
-function extractJson(text: string): unknown {
+export function extractJson(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1]! : text;
   const start = candidate.indexOf('{');
   const end = candidate.lastIndexOf('}');
   const slice = start >= 0 && end > start ? candidate.slice(start, end + 1) : candidate;
   return JSON.parse(slice);
+}
+
+/** Map a possibly-approximate requested path to a real one from the repo map. */
+export function resolvePath(requested: string, repoMap?: string[]): string | undefined {
+  if (!repoMap || repoMap.length === 0) {
+    return requested; // no map to check against; try as-is
+  }
+  if (repoMap.includes(requested)) {
+    return requested;
+  }
+  const base = requested.split('/').pop() ?? requested;
+  // Prefer a unique suffix match, else a unique basename match.
+  const suffix = repoMap.filter((f) => f.endsWith(`/${requested}`) || f === requested);
+  if (suffix.length === 1) {
+    return suffix[0];
+  }
+  const byBase = repoMap.filter((f) => (f.split('/').pop() ?? f) === base);
+  if (byBase.length === 1) {
+    return byBase[0];
+  }
+  return undefined; // ambiguous or unknown — report as not found with the file list
 }
 
 export class OpenAICompatibleProvider implements PlanProvider {
@@ -215,7 +236,7 @@ export class OpenAICompatibleProvider implements PlanProvider {
     }
     const parts: string[] = [];
     for (const requested of paths) {
-      const resolved = this.resolvePath(requested, ctx.repoMap);
+      const resolved = resolvePath(requested, ctx.repoMap);
       ctx.onProgress?.(`Reading ${resolved ?? requested}`);
       const content = ctx.readFile && resolved ? await ctx.readFile(resolved) : undefined;
       if (content === undefined) {
@@ -229,26 +250,6 @@ export class OpenAICompatibleProvider implements PlanProvider {
     return parts.join('\n\n') || '(no files requested)';
   }
 
-  /** Map a possibly-approximate requested path to a real one from the repo map. */
-  private resolvePath(requested: string, repoMap?: string[]): string | undefined {
-    if (!repoMap || repoMap.length === 0) {
-      return requested; // no map to check against; try as-is
-    }
-    if (repoMap.includes(requested)) {
-      return requested;
-    }
-    const base = requested.split('/').pop() ?? requested;
-    // Prefer a unique suffix match, else a unique basename match.
-    const suffix = repoMap.filter((f) => f.endsWith(`/${requested}`) || f === requested);
-    if (suffix.length === 1) {
-      return suffix[0];
-    }
-    const byBase = repoMap.filter((f) => (f.split('/').pop() ?? f) === base);
-    if (byBase.length === 1) {
-      return byBase[0];
-    }
-    return undefined; // ambiguous or unknown — report as not found with the file list
-  }
 
   /** One chat call; returns the assistant message content + any tool calls. */
   private async chat(

@@ -294,4 +294,113 @@ describe('Orchestrator', () => {
     expect(rollback.reverted).toBe(1);
     expect(result.restored).toBeGreaterThan(0);
   });
+
+  it('apply(): applyStep conflict outcome notifies conflict', async () => {
+    const { orch, editor, panel } = build();
+    editor.applyStep = async (): Promise<ApplyOutcome> => ({ status: 'conflict', reason: 'merge conflict' });
+    await orch.start('fix it');
+    await panel.emit({ type: 'apply' });
+    expect(panel.conflicts.some((c) => c.reason === 'merge conflict')).toBe(true);
+  });
+
+  it('apply(): applyStep error outcome notifies error', async () => {
+    const { orch, editor, panel } = build();
+    editor.applyStep = async (): Promise<ApplyOutcome> => ({ status: 'error', message: 'permission denied' });
+    await orch.start('fix it');
+    await panel.emit({ type: 'apply' });
+    expect(panel.errors.some((e) => e.includes('permission denied'))).toBe(true);
+    expect(editor.applied).toHaveLength(0);
+  });
+
+  it('apply(): a snapshot failure surfaces as an error instead of deadlocking (regression)', async () => {
+    const { orch, editor, panel, rollback } = build();
+    rollback.snapshotBeforeApply = async () => {
+      throw new Error('disk full');
+    };
+    await orch.start('fix it');
+    await panel.emit({ type: 'apply' });
+    expect(panel.errors.some((e) => /disk full/i.test(e))).toBe(true);
+    expect(editor.applied).toHaveLength(0); // never reached applyStep
+  });
+
+  it('handleMessage never leaks an unhandled rejection (regression)', async () => {
+    const { orch, editor, panel } = build();
+    await orch.start('fix it');
+    editor.navigateTo = async () => {
+      throw new Error('navigate boom');
+    };
+    await panel.emit({ type: 'openLocation', file: 'a.ts', line: 1 });
+    expect(panel.errors.some((e) => /went wrong/i.test(e))).toBe(true);
+  });
+
+  it('activateCurrentStep: a hydrate failure surfaces notifyError', async () => {
+    const { orch, provider, panel } = build();
+    provider.hydrateStep = async () => {
+      throw new Error('hydrate boom');
+    };
+    await orch.start('fix it');
+    expect(panel.errors.some((e) => /hydrate boom/i.test(e))).toBe(true);
+  });
+
+  it('openLocation with an empty file does not navigate', async () => {
+    const { orch, editor, panel } = build();
+    await orch.start('fix it');
+    const before = editor.navigated.length;
+    await panel.emit({ type: 'openLocation', file: '', line: 0 });
+    expect(editor.navigated.length).toBe(before);
+  });
+
+  it('apply() is a no-op when not waiting_for_apply (e.g. paused)', async () => {
+    const { orch, editor, panel } = build();
+    await orch.start('fix it');
+    await panel.emit({ type: 'pause' });
+    const applied = editor.applied.length;
+    await panel.emit({ type: 'apply' });
+    expect(editor.applied.length).toBe(applied);
+  });
+
+  it('review(): switching to a different reviewed step re-renders it', async () => {
+    const { orch, panel } = build();
+    await orch.start('fix it');
+    await panel.emit({ type: 'apply' }); // advance to step 2 (both hydrated)
+    await panel.emit({ type: 'reviewStep', stepNumber: 1 });
+    expect(orch.getState().review?.viewing).toBe(1);
+    await panel.emit({ type: 'reviewStep', stepNumber: 2 });
+    expect(orch.getState().review?.viewing).toBe(2);
+    expect(panel.rendered.at(-1)!.reviewMode).toBe(true);
+  });
+
+  it('resume() from the explaining phase fires SHOW_READY', async () => {
+    const { orch, editor } = build();
+    editor.showDiff = async () => {
+      orch.pause(); // pause while phase === 'explaining' (between HYDRATE_DONE and SHOW_READY)
+    };
+    await orch.start('fix it');
+    expect(orch.getState().phase).toBe('paused');
+    await orch.resume();
+    expect(orch.getState().phase).toBe('waiting_for_apply');
+  });
+
+  it('ask(): posts an error when the provider has no answerQuestion', async () => {
+    const noChat: PlanProvider = {
+      async produceOutline(_p: string, ctx: RepoContext): Promise<WalkthroughOutline> {
+        return { sessionId: 's', problemSummary: 'x', mode: ctx.mode ?? 'solve', steps: [outlineStep(1, 'a.ts')] };
+      },
+      async hydrateStep(step: OutlineStep): Promise<HydratedStep> {
+        return {
+          stepNumber: step.stepNumber,
+          primaryFile: 'a.ts',
+          changeKind: 'edit',
+          hunks: [{ contextBefore: 'top', oldText: 'TARGET', newText: 'F', contextAfter: 'bottom' }],
+          navigation: { file: 'a.ts', startLine: 2, endLine: 2 },
+          hazards: [],
+        };
+      },
+    };
+    const panel = new FakePanel();
+    const orch = new Orchestrator(noChat, new FakeEditor({ ...FILES }), panel, new FakeRollback(), { workspaceRoot: '/repo' });
+    await orch.start('x');
+    await panel.emit({ type: 'ask', id: 9, question: 'q' });
+    expect(panel.answerErrors.some((e) => e.id === 9)).toBe(true);
+  });
 });

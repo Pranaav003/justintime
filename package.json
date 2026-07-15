@@ -150,6 +150,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "baseline": "node scripts/check-baseline.mjs",
+    "verify": "npm run typecheck && npm run test && npm run baseline && npm run build",
     "build:e2e": "node esbuild-e2e.mjs",
     "test:e2e": "npm run build && npm run build:e2e && node dist-e2e/runTest.js",
     "smoke": "node esbuild-smoke.mjs && node dist-smoke/smoke.js"
@@ -157,6 +160,7 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.95.0",
+    "@vitest/coverage-v8": "^2.1.9",
     "@vscode/test-electron": "^3.0.0",
     "@vscode/vsce": "^3.2.0",
     "dompurify": "^3.4.11",

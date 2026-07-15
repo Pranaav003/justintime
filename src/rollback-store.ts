@@ -63,7 +63,15 @@ export class RollbackStore {
     if (!raw) {
       return;
     }
-    const parsed = JSON.parse(raw) as { order: SnapshotEntry[] };
+    let parsed: { order?: SnapshotEntry[] };
+    try {
+      parsed = JSON.parse(raw) as { order?: SnapshotEntry[] };
+    } catch {
+      // Corrupt index — start fresh rather than crashing Revert All.
+      this.index = [];
+      this.seq = 0;
+      return;
+    }
     this.index = parsed.order ?? [];
     this.seq = this.index.reduce((max, e) => {
       const n = e.snapFile ? Number(e.snapFile.split('/').pop()!.replace('.snap', '')) : -1;
