@@ -34,6 +34,8 @@ export interface OpenAIProviderConfig {
   label?: string;
   maxSteps?: number;
   fetchFn?: FetchFn;
+  /** Structured logger forwarded from the extension (timestamp/level/type). */
+  log?: (level: 'error' | 'warn' | 'info', message: string, error?: unknown) => void;
 }
 
 interface ToolCall {
@@ -160,6 +162,7 @@ export class OpenAICompatibleProvider implements PlanProvider {
   private readonly label: string;
   private readonly maxSteps: number;
   private readonly fetchFn: FetchFn;
+  private readonly log?: (level: 'error' | 'warn' | 'info', message: string, error?: unknown) => void;
 
   constructor(config: OpenAIProviderConfig) {
     this.baseUrl = config.baseUrl.replace(/\/+$/, '');
@@ -168,6 +171,7 @@ export class OpenAICompatibleProvider implements PlanProvider {
     this.label = config.label ?? 'OpenAI-compatible';
     this.maxSteps = config.maxSteps ?? 30;
     this.fetchFn = config.fetchFn ?? globalThis.fetch;
+    this.log = config.log;
   }
 
   async produceOutline(problem: string, ctx: RepoContext): Promise<WalkthroughOutline> {
@@ -362,8 +366,14 @@ export class OpenAICompatibleProvider implements PlanProvider {
         }
       }
     }
-    // Keep the raw validation detail in the extension log, but show the user a concise hint.
-    console.error(`[JustInTime] ${this.label} structured-output failure:`, lastErr);
+    // Route through the structured output channel (visible in JustInTime Output, not DevTools).
+    // Fall back to console.error only when no logger is wired (unit tests without extension host).
+    if (this.log) {
+      this.log('error', `[JustInTime] ${this.label} structured-output failure`, lastErr);
+    } else {
+      // eslint-disable-next-line no-console
+      console.error(`[JustInTime] ${this.label} structured-output failure:`, lastErr);
+    }
     throw new Error(
       `${this.label} (${this.model}) didn't return a valid plan. Smaller local models often struggle with structured output — try Explain mode, or a more capable model.`,
     );

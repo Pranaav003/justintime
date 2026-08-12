@@ -98,6 +98,13 @@ export interface ClaudeAgentProviderOptions {
   claudeExecutable?: string;
   /** Cap the agentic exploration loop as a runaway backstop. */
   maxTurns?: number;
+  /**
+   * Anthropic API key to inject into the Claude subprocess environment.
+   * Passed via the SDK's `env` option so it is scoped to the subprocess only —
+   * never written to the shared `process.env` of the VS Code extension host
+   * (which is readable by all co-installed extensions). (Finding 1 / Finding 5)
+   */
+  apiKey?: string;
 }
 
 export class ClaudeAgentProvider implements PlanProvider {
@@ -105,6 +112,7 @@ export class ClaudeAgentProvider implements PlanProvider {
   private readonly model?: string;
   private readonly claudeExecutable?: string;
   private readonly maxTurns?: number;
+  private readonly apiKey?: string;
 
   constructor(
     private readonly query: QueryFn,
@@ -114,6 +122,7 @@ export class ClaudeAgentProvider implements PlanProvider {
     this.model = options.model;
     this.claudeExecutable = options.claudeExecutable;
     this.maxTurns = options.maxTurns;
+    this.apiKey = options.apiKey;
   }
 
   /** SDK options conditional on provider config + a caller-supplied abort signal. */
@@ -123,6 +132,13 @@ export class ClaudeAgentProvider implements PlanProvider {
       ...(this.claudeExecutable ? { pathToClaudeCodeExecutable: this.claudeExecutable } : {}),
       ...(this.maxTurns ? { maxTurns: this.maxTurns } : {}),
     };
+    // Pass the API key directly to the subprocess environment instead of writing
+    // to the shared process.env of the extension host. When 'env' is set it fully
+    // replaces the subprocess env, so we spread process.env to preserve PATH etc.
+    // This keeps the key scoped to the subprocess only. (Finding 1)
+    if (this.apiKey) {
+      extras.env = { ...process.env, ANTHROPIC_API_KEY: this.apiKey };
+    }
     if (signal) {
       // Bridge the caller's AbortSignal to the SDK's AbortController option.
       const ac = new AbortController();

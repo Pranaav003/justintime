@@ -241,6 +241,10 @@ export class EditorBridge implements vscode.Disposable {
       contents: Buffer.from(step.fullFileContent ?? '', 'utf8'),
     });
     const ok = await vscode.workspace.applyEdit(edit);
+    // No doc.save() needed: WorkspaceEdit.createFile with 'contents' uses the VS Code
+    // filesystem API and writes directly to disk (not a buffer-level edit), so the
+    // file is already persisted. Unlike applyEdit (which replaces buffer content and
+    // needs an explicit save), create/delete/rename are filesystem-level operations. (Finding 6)
     return ok ? { status: 'applied' } : { status: 'error', message: 'createFile failed' };
   }
 
@@ -249,6 +253,7 @@ export class EditorBridge implements vscode.Disposable {
     const edit = new vscode.WorkspaceEdit();
     edit.deleteFile(uri, { ignoreIfNotExists: true });
     const ok = await vscode.workspace.applyEdit(edit);
+    // No doc.save() needed: deleteFile is a filesystem-level operation (see applyCreate comment). (Finding 6)
     return ok ? { status: 'applied' } : { status: 'error', message: 'deleteFile failed' };
   }
 
@@ -259,6 +264,7 @@ export class EditorBridge implements vscode.Disposable {
     const edit = new vscode.WorkspaceEdit();
     edit.renameFile(this.uriFor(step.primaryFile), this.uriFor(step.renameTo), { overwrite: false });
     const ok = await vscode.workspace.applyEdit(edit);
+    // No doc.save() needed: renameFile is a filesystem-level operation (see applyCreate comment). (Finding 6)
     return ok ? { status: 'applied' } : { status: 'error', message: 'renameFile failed' };
   }
 

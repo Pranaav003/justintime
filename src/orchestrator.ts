@@ -1,3 +1,4 @@
+import { resolve as pathResolve, relative as pathRelative } from 'node:path';
 import { initialState, transition, type SessionState, type WalkthroughEvent } from './state-machine';
 import { applyHunks, locateSnippet } from './anchor';
 import type { OutlineStep, WalkthroughOutline, HydratedStep, ApplyOutcome, WalkthroughMode } from './types';
@@ -63,10 +64,6 @@ const SOFT_TIMEOUT_MS = 45_000;
 /** Default hard-abort ceiling; overridable via options (0 = never, rely on Cancel). */
 const DEFAULT_ANALYSIS_TIMEOUT_SEC = 600;
 
-function join(...parts: string[]): string {
-  return parts.join('/').replace(/\/{2,}/g, '/');
-}
-
 export class Orchestrator {
   private state: SessionState = initialState();
   private outline?: WalkthroughOutline;
@@ -79,6 +76,8 @@ export class Orchestrator {
   private skippedCount = 0;
   private registered = false;
   private inflight?: AbortController;
+  /** Per-session AbortController for chat asks — aborted by cancel() and reused across calls. */
+  private chatAc: AbortController = new AbortController();
   private cancelled = false;
   private timedOut = false;
 
@@ -110,6 +109,10 @@ export class Orchestrator {
   cancel(): void {
     this.cancelled = true;
     this.inflight?.abort();
+    // Also abort any in-flight chat asks so they don't hold references or burn
+    // API tokens after the session is torn down (Finding 4).
+    this.chatAc.abort();
+    this.chatAc = new AbortController();
     // Reset immediately so the panel doesn't sit on a spinner while the
     // subprocess winds down.
     this.panel.showIdle('Cancelled. Run “JustInTime: Start Walkthrough” to begin again.');
@@ -468,7 +471,14 @@ export class Orchestrator {
   }
 
   private absPath(rel: string): string {
-    return join(this.opts.workspaceRoot, rel);
+    // Validate that the resolved path stays within the workspace root to prevent
+    // a model-controlled primaryFile from escaping via '..' segments (Finding 7).
+    const abs = pathResolve(this.opts.workspaceRoot, rel);
+    const relative = pathRelative(this.opts.workspaceRoot, abs);
+    if (relative.startsWith('..')) {
+      throw new Error(`path traversal rejected: "${rel}" escapes workspaceRoot`);
+    }
+    return abs;
   }
 
   async apply(): Promise<void> {
@@ -576,6 +586,9 @@ export class Orchestrator {
     }
     const hydrated = this.hydratedByStep.get(n);
     if (this.mode === 'solve' && !hydrated) {
+      // The step is not yet hydrated — restore the prior phase so the machine is
+      // not left stuck in 'reviewing' with no visible update (Finding 2).
+      this.dispatch({ type: 'EXIT_REVIEW' });
       return;
     }
     this.panel.renderStep(this.buildView(step, hydrated, true));
@@ -602,11 +615,12 @@ export class Orchestrator {
         `Why here: ${step.specificExplanation}\n` +
         `Relevant file(s): ${step.targetFiles.join(', ')}`
       : 'No active step.';
-    const ac = new AbortController(); // independent of the walkthrough's inflight controller
+    // Use the session-level chatAc so this question is aborted when cancel() fires
+    // instead of running indefinitely after the walkthrough session is torn down (Finding 4).
     try {
       const answer = await this.provider.answerQuestion(question, contextText, {
         workspaceRoot: this.opts.workspaceRoot,
-        signal: ac.signal,
+        signal: this.chatAc.signal,
         readFile: (p) => this.editor.readFile(p),
         searchCode: (q) => this.editor.searchCode(q),
       });

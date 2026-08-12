@@ -45,6 +45,8 @@ interface ActiveSession {
 let session: ActiveSession | undefined;
 let extContext: vscode.ExtensionContext;
 let output: vscode.OutputChannel | undefined;
+/** Generation counter for runWalkthrough; incremented on each invocation to detect superseded starts. */
+let runGeneration = 0;
 
 /** Structured log to the JustInTime output channel (timestamp/level/type/stack). */
 function log(level: LogLevel, message: string, error?: unknown): void {
@@ -59,11 +61,15 @@ async function defaultProvider(maxSteps: number): Promise<PlanProvider> {
   const model = cfg.get<string>('model') || undefined;
 
   if (provider === 'claude-agent-sdk') {
-    await applyStoredApiKey();
+    // Read the stored key directly from SecretStorage and pass it to the provider
+    // via its apiKey option (injected into the subprocess env). Never write to the
+    // shared process.env — all co-installed extensions can read it. (Finding 1 / 5)
+    const storedKey = await extContext.secrets.get(SECRET_KEY);
     return new ClaudeAgentProvider(makeClaudeQuery(), {
       maxSteps,
       model,
       claudeExecutable: resolveClaudeExecutable(cfg.get<string>('claudeExecutable')),
+      ...(storedKey ? { apiKey: storedKey } : {}),
     });
   }
 
@@ -79,6 +85,7 @@ async function defaultProvider(maxSteps: number): Promise<PlanProvider> {
     model: model ?? preset.defaultModel,
     label: preset.label,
     maxSteps,
+    log,
   });
 }
 
@@ -195,14 +202,16 @@ async function startCommand(preselected?: WalkthroughMode): Promise<void> {
 }
 
 async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<void> {
+  // Guard against a double-start race: if a second invocation fires while the first
+  // is still in an async gap (provider construction), the first is superseded. (Finding 3)
+  const gen = ++runGeneration;
+
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) {
     void vscode.window.showErrorMessage('JustInTime requires an open workspace folder.');
     return;
   }
   const workspaceRoot = folders[0]!.uri.fsPath;
-
-  await applyStoredApiKey();
 
   const config = vscode.workspace.getConfiguration('justintime');
   const maxSteps = config.get<number>('maxSteps', 30);
@@ -218,6 +227,11 @@ async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<v
   } catch (err) {
     log('error', 'Failed to initialize provider', err);
     void vscode.window.showErrorMessage(`JustInTime: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  // If another runWalkthrough() started while we were awaiting providerFactory,
+  // this invocation is superseded — discard it without touching the new session. (Finding 3)
+  if (gen !== runGeneration) {
     return;
   }
 
@@ -284,8 +298,9 @@ async function setApiKey(): Promise<void> {
       ignoreFocusOut: true,
     });
     if (key) {
+      // Store only in SecretStorage — never in process.env (which is shared with
+      // all co-installed extensions in the VS Code extension host). (Finding 1)
       await extContext.secrets.store(SECRET_KEY, key);
-      process.env.ANTHROPIC_API_KEY = key;
     }
     await cfg.update('provider', 'claude-agent-sdk', G);
     void vscode.window.showInformationMessage('JustInTime: provider set to Claude.');
@@ -350,22 +365,6 @@ async function setApiKey(): Promise<void> {
   void vscode.window.showInformationMessage(
     `JustInTime: provider set to ${preset.label} (${baseUrl}). Model: ${model || preset.defaultModel || '(unset)'}.`,
   );
-}
-
-/**
- * Auth (design Section 2): the SDK inherits the user's existing local `claude`
- * credentials automatically, so we only inject a key when one has been stored
- * via the setApiKey command. We never prompt upfront, to respect an existing
- * claude.ai login.
- */
-async function applyStoredApiKey(): Promise<void> {
-  if (process.env.ANTHROPIC_API_KEY) {
-    return;
-  }
-  const stored = await extContext.secrets.get(SECRET_KEY);
-  if (stored) {
-    process.env.ANTHROPIC_API_KEY = stored;
-  }
 }
 
 function disposeSession(): void {

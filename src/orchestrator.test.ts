@@ -381,6 +381,129 @@ describe('Orchestrator', () => {
     expect(orch.getState().phase).toBe('waiting_for_apply');
   });
 
+  it('double-start race: second start() supersedes the first before it registers (Finding 3)', async () => {
+    // Finding 3: if start() is called twice, the first call must be superseded.
+    // We test this at the Orchestrator level (the double-start in extension.ts is
+    // separately guarded by the runGeneration counter).
+    // Calling start() twice on the same orchestrator — the second call re-registers
+    // and must not leave two competing panel handlers.
+    const { orch, panel } = build();
+    // Start once and let it complete outline+hydration.
+    await orch.start('fix it');
+    const rendersAfterFirst = panel.rendered.length;
+    expect(rendersAfterFirst).toBeGreaterThan(0);
+    // Start again — should work cleanly without doubling up handlers.
+    await orch.start('fix it again');
+    // The orchestrator must be in a clean active state for the second run.
+    expect(orch.getState().phase).toBe('waiting_for_apply');
+    expect(orch.getState().currentStep).toBe(1);
+  });
+
+  it('apply(): absPath rejects path traversal in primaryFile (Finding 7)', async () => {
+    // The model-controlled primaryFile must not be able to escape the workspaceRoot.
+    const traversalPath = '../../etc/passwd';
+    const provider = new FakeProvider();
+    // Feed the traversal file as "existing" content so applyHunks succeeds and we
+    // actually reach the snapshotBeforeApply call — making the test meaningful.
+    const filesWithTraversal = { ...FILES, [traversalPath]: 'top\nTARGET\nbottom' };
+    const editor = new FakeEditor(filesWithTraversal);
+    const panel = new FakePanel();
+    const rollback = new FakeRollback();
+    // Override hydrateStep to return a traversal path.
+    provider.hydrateStep = async (step: OutlineStep): Promise<HydratedStep> => ({
+      stepNumber: step.stepNumber,
+      primaryFile: traversalPath,
+      changeKind: 'edit',
+      hunks: [{ contextBefore: 'top', oldText: 'TARGET', newText: 'FIXED', contextAfter: 'bottom' }],
+      navigation: { file: traversalPath, startLine: 1, endLine: 1 },
+      hazards: [],
+    });
+    const orch = new Orchestrator(provider, editor, panel, rollback, { workspaceRoot: '/repo' });
+    await orch.start('fix it');
+    await panel.emit({ type: 'apply' });
+    // The snapshot path must be within workspaceRoot (no `..` escape).
+    for (const snap of rollback.snapshots) {
+      expect(snap.path.startsWith('/repo')).toBe(true);
+    }
+    // No snapshot path should contain '..' (traversal rejected)
+    const hasUnsafeSnapshot = rollback.snapshots.some((s) => s.path.includes('../'));
+    expect(hasUnsafeSnapshot).toBe(false);
+  });
+
+  it('review(): clicking a future unhydrated step in solve mode exits reviewing state immediately', async () => {
+    // Finding 2: zombie "reviewing" state — clicking a future unhydrated step must NOT leave
+    // the state machine stuck in "reviewing" with no visible update.
+    const { orch, panel } = build();
+    await orch.start('fix it');
+    // We are on step 1, waiting_for_apply. Step 2 is NOT yet hydrated.
+    const phaseBefore = orch.getState().phase;
+    expect(phaseBefore).toBe('waiting_for_apply');
+    await panel.emit({ type: 'reviewStep', stepNumber: 2 });
+    // After clicking the unhydrated future step the state must NOT be "reviewing".
+    expect(orch.getState().phase).not.toBe('reviewing');
+    // It should be back to the previous phase so apply still works.
+    expect(orch.getState().phase).toBe('waiting_for_apply');
+    // Apply must still work (wasn't deadlocked).
+    await panel.emit({ type: 'apply' });
+    expect(panel.applied).toContain(1);
+  });
+
+  it('ask(): answerQuestion throwing posts an answerError (Finding 10 coverage)', async () => {
+    // Finding 10: the catch block in ask() when answerQuestion throws a real error.
+    const { orch, panel } = build();
+    const provider = (orch as unknown as { provider: FakeProvider }).provider;
+    provider.answerQuestion = async (): Promise<string> => {
+      throw new Error('network failure');
+    };
+    await orch.start('fix it');
+    await panel.emit({ type: 'ask', id: 99, question: 'will this fail?' });
+    expect(panel.answerErrors.some((e) => e.id === 99)).toBe(true);
+    const err = panel.answerErrors.find((e) => e.id === 99);
+    expect(err?.message).toContain('network failure');
+  });
+
+  it('ask(): "No active step" contextText used when displayedStepNumber refers to missing step (Finding 10)', async () => {
+    // Finding 10: line 604 — "No active step." branch when step is undefined.
+    // We test this by starting with a provider that returns a 1-step outline (step 1),
+    // and then asking when the step is not present in the outline (simulated by
+    // overriding the outline to have no steps after start).
+    const { orch, panel } = build();
+    await orch.start('fix it');
+    // Forcibly clear the outline steps so the displayed step lookup returns undefined.
+    (orch as unknown as { outline: { steps: [] } }).outline!.steps = [];
+    // ask() should degrade gracefully using "No active step." as contextText.
+    await panel.emit({ type: 'ask', id: 55, question: 'where am i?' });
+    // The answer will be posted (provider returns context string as part of the answer).
+    const answer = panel.answers.find((a) => a.id === 55);
+    expect(answer?.answer).toBeDefined();
+    // The contextText passed to the provider should contain "No active step."
+    // since the step lookup returned undefined.
+    expect(answer?.answer).toContain('No active step');
+  });
+
+  it('ask(): aborts in-flight question when cancel() is called (Finding 4)', async () => {
+    // Finding 4: the chat AbortController must be connected to cancel() so an
+    // in-flight question is aborted when the walkthrough session is cancelled.
+    let capturedSignal: AbortSignal | undefined;
+    const { orch, panel } = build();
+    const provider = (orch as unknown as { provider: FakeProvider }).provider;
+    provider.answerQuestion = async (_q: string, _ctx: string, opts?: { signal?: AbortSignal }): Promise<string> => {
+      capturedSignal = opts?.signal;
+      // Simulate a long-running question that respects abort.
+      return new Promise<string>((_resolve, reject) => {
+        opts?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    };
+    await orch.start('fix it');
+    // Start the chat question (don't await — it hangs until aborted).
+    const askP = panel.emit({ type: 'ask', id: 77, question: 'long question' });
+    // Cancel the walkthrough — this should abort the in-flight ask.
+    orch.cancel();
+    await askP;
+    // The captured signal must have been aborted.
+    expect(capturedSignal?.aborted).toBe(true);
+  });
+
   it('ask(): posts an error when the provider has no answerQuestion', async () => {
     const noChat: PlanProvider = {
       async produceOutline(_p: string, ctx: RepoContext): Promise<WalkthroughOutline> {

@@ -234,6 +234,61 @@ describe('OpenAICompatibleProvider tool loop + JSON', () => {
   });
 });
 
+describe('OpenAICompatibleProvider serveReadFiles coverage (Finding 11)', () => {
+  const done = { choices: [{ message: { content: 'done' } }] };
+  const jsonOut = { choices: [{ message: { content: JSON.stringify({ problemSummary: 'x', steps: [{ stepNumber: 1, title: 't', targetFiles: ['a.ts'], dependsOn: [], changeKind: 'edit', genericExplanation: 'g', specificExplanation: 's' }] }) } }] };
+
+  it('serveReadFiles returns an error string on malformed JSON arguments', async () => {
+    // Finding 11: lines 293-294 — JSON parse failure in serveReadFiles.
+    const toolCall = (name: string, args: string) => ({
+      choices: [{ message: { content: '', tool_calls: [{ id: 't', type: 'function', function: { name, arguments: args } }] } }],
+    });
+    const readFiles: string[] = [];
+    const { provider } = makeProvider([
+      toolCall('read_files', 'NOT_VALID_JSON{{{{'),
+      done,
+      jsonOut,
+    ]);
+    // The outline should still succeed: malformed args produce a "(could not parse)" result,
+    // the model continues to the done message, then the JSON is returned.
+    const outline = await provider.produceOutline('p', {
+      workspaceRoot: '/r',
+      mode: 'solve',
+      readFile: async (p) => { readFiles.push(p); return 'content'; },
+    });
+    expect(outline.steps).toHaveLength(1);
+    // readFile must NOT have been called (the malformed JSON path never resolved).
+    expect(readFiles).toHaveLength(0);
+  });
+
+  it('serveReadFiles reports not-found with repoMap hint when file is missing', async () => {
+    // Finding 11: lines 301-302 — file-not-found with repoMap hint.
+    const toolCall = (name: string, args: string) => ({
+      choices: [{ message: { content: '', tool_calls: [{ id: 't', type: 'function', function: { name, arguments: args } }] } }],
+    });
+    const { fn, bodies } = fakeFetch([
+      toolCall('read_files', '{"paths":["nonexistent.ts"]}'),
+      done,
+      jsonOut,
+    ]);
+    // Pass a repoMap so the "Available files:" hint is included in the result.
+    const provider = new OpenAICompatibleProvider({ baseUrl: 'http://x/v1', apiKey: 'k', model: 'm', fetchFn: fn });
+    await provider.produceOutline('p', {
+      workspaceRoot: '/r',
+      mode: 'solve',
+      repoMap: ['real-file.ts', 'other.ts'],
+      readFile: async () => undefined, // no file found
+    });
+    // The tool-result message in bodies[1] (after tool call + serve) should contain "Available files:"
+    const toolResultBody = bodies[1] as { messages?: { content?: string; role?: string }[] };
+    const toolResultMsg = toolResultBody?.messages?.find((m: { role?: string }) => m.role === 'tool');
+    expect(toolResultMsg?.content).toContain('not found');
+    expect(toolResultMsg?.content).toContain('Available files:');
+    // Suppress unused variable warning
+    void bodies;
+  });
+});
+
 describe('detectTextToolCall', () => {
   it('recognizes a fenced JSON tool call for a known tool', () => {
     const call = detectTextToolCall('```json\n{"name":"search_code","arguments":{"query":"divide"}}\n```');
