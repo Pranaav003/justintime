@@ -1,5 +1,5 @@
 import type { PlanProvider, RepoContext, SessionCtx, FileState } from './plan-source';
-import type { WalkthroughOutline, OutlineStep, HydratedStep } from './types';
+import type { WalkthroughOutline, OutlinePayload, OutlineStep, HydratedStep } from './types';
 import { parseOutlinePayload, parseHydratedStep } from './schema';
 import {
   OUTLINE_SYSTEM_APPEND,
@@ -33,6 +33,8 @@ export interface OpenAIProviderConfig {
   /** Human label for error messages (e.g. "OpenAI", "Ollama"). */
   label?: string;
   maxSteps?: number;
+  /** Undefined keeps legacy zero; null leaves sampling to the endpoint. */
+  temperature?: number | null;
   fetchFn?: FetchFn;
   /** Structured logger forwarded from the extension (timestamp/level/type). */
   log?: (level: 'error' | 'warn' | 'info', message: string, error?: unknown) => void;
@@ -48,6 +50,8 @@ interface ChatMessage {
   content: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  reasoning?: string;
+  reasoning_content?: string;
 }
 
 const READ_FILES_TOOL = {
@@ -87,8 +91,7 @@ const TOOL_PREAMBLE =
   'To FIND relevant code, call search_code with a keyword or regex (e.g. for exception handling, ' +
   'search "except|raise|Error"); then call read_files to read the matching files. Request paths ' +
   'EXACTLY as they appear in the file list or search results — do not invent paths, and never ' +
-  'describe code you have not actually read. Ground every statement in the file contents you fetched. ' +
-  'When done exploring, output the requested JSON only.';
+  'describe code you have not actually read. Ground every statement in the file contents you fetched.';
 
 const MAX_TOOL_ROUNDS = 5;
 const MAX_FILES_PER_CALL = 15;
@@ -161,6 +164,7 @@ export class OpenAICompatibleProvider implements PlanProvider {
   private readonly model: string;
   private readonly label: string;
   private readonly maxSteps: number;
+  private readonly temperature: number | null;
   private readonly fetchFn: FetchFn;
   private readonly log?: (level: 'error' | 'warn' | 'info', message: string, error?: unknown) => void;
 
@@ -170,6 +174,10 @@ export class OpenAICompatibleProvider implements PlanProvider {
     this.model = config.model;
     this.label = config.label ?? 'OpenAI-compatible';
     this.maxSteps = config.maxSteps ?? 30;
+    const temperature = config.temperature;
+    this.temperature = temperature === null ? null
+      : typeof temperature === 'number' && Number.isFinite(temperature) && temperature >= 0 && temperature <= 2
+        ? temperature : 0;
     this.fetchFn = config.fetchFn ?? globalThis.fetch;
     this.log = config.log;
   }
@@ -186,8 +194,14 @@ export class OpenAICompatibleProvider implements PlanProvider {
       { role: 'system', content: `${TOOL_PREAMBLE}\n\n${append}` },
       { role: 'user', content: userPrompt },
     ];
-    await this.explore(messages, ctx);
-    const payload = await this.completeJson(messages, ctx.signal, parseOutlinePayload);
+    const terminal = await this.explore(messages, ctx);
+    let payload: OutlinePayload;
+    try {
+      payload = parseOutlinePayload(extractJson(terminal));
+    } catch {
+      // Keep structured synthesis and its correction retry for unusable replies.
+      payload = await this.completeJson(messages, ctx.signal, parseOutlinePayload);
+    }
     // OpenAI-compatible endpoints don't expose a resumable session id.
     return { ...payload, sessionId: `openai-${this.model}`, mode };
   }
@@ -211,10 +225,8 @@ export class OpenAICompatibleProvider implements PlanProvider {
     // The final non-tool message from the explore loop IS the answer — no extra
     // call (which would drop tools and make the model emit "let me search…" prose).
     const answer = await this.explore(messages, ctx);
-    // Weak models sometimes end on a text-embedded tool call (or empty content)
-    // instead of prose. If so, force one tools-off completion so the user gets a
-    // grounded natural-language answer rather than raw JSON. `messages` now holds
-    // the full tool transcript (explore mutates it), so this call has context.
+    // Exhausted exploration or an empty reply needs one tools-off completion.
+    // The full tool transcript (including the last result) grounds this answer.
     if (!answer.trim() || detectTextToolCall(answer)) {
       const finalMsg = await this.chat(
         [
@@ -234,41 +246,72 @@ export class OpenAICompatibleProvider implements PlanProvider {
 
   /** Run search_code / read_files tool rounds; returns the final non-tool assistant text. */
   private async explore(messages: ChatMessage[], ctx: RepoContext): Promise<string> {
-    let lastContent = '';
+    const requiresEvidence = Boolean(ctx.readFile || ctx.searchCode);
+    let hasEvidence = false;
+    // Keep evidence scoped to this invocation, and accept it only after an
+    // actual workspace callback resolves without cancellation.
+    const evidenceCtx: RepoContext = {
+      ...ctx,
+      readFile: ctx.readFile && (async (path) => {
+        const content = await ctx.readFile!(path);
+        ctx.signal?.throwIfAborted();
+        if (content !== undefined) hasEvidence = true;
+        return content;
+      }),
+      searchCode: ctx.searchCode && (async (query) => {
+        const result = await ctx.searchCode!(query);
+        ctx.signal?.throwIfAborted();
+        if (!ctx.readFile && result.trim() && !result.trim().startsWith('(no matches for ')) hasEvidence = true;
+        return result;
+      }),
+    };
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      // Force at least one tool call up front so weak models ground in real code
-      // before answering, instead of hallucinating.
+      // Require tools until the model has obtained actual workspace evidence.
       const msg = await this.chat(messages, {
         tools: TOOLS,
-        toolChoice: round === 0 ? 'required' : 'auto',
+        toolChoice: round === 0 || (requiresEvidence && !hasEvidence) ? 'required' : 'auto',
         signal: ctx.signal,
       });
-      lastContent = msg.content;
       let toolCalls = msg.tool_calls;
       if (!toolCalls || toolCalls.length === 0) {
         // Fall back to a text-embedded tool call (weak-model shape) before giving up.
         const textCall = detectTextToolCall(msg.content);
         if (!textCall) {
-          return lastContent;
+          if (!requiresEvidence || hasEvidence) return msg.content;
+          // Discard the ungrounded answer so invented code cannot pollute the
+          // later grounded transcript. Corrective retries share the tool budget.
+          messages.push({
+            role: 'user',
+            content: `Do not produce an answer or outline yet. You have not obtained the required workspace code evidence. Call ${ctx.readFile ? 'read_files' : 'search_code'} first to obtain actual code evidence.`,
+          });
+          continue;
         }
         toolCalls = [textCall];
       }
       const fromTextCall = toolCalls !== msg.tool_calls;
       // For a synthesized call, blank the content so the model doesn't re-see its own JSON.
-      messages.push({ role: 'assistant', content: fromTextCall ? '' : msg.content, tool_calls: toolCalls });
+      messages.push({
+        role: 'assistant', content: fromTextCall ? '' : msg.content, tool_calls: toolCalls,
+        // Some reasoning models require these fields to continue a tool turn.
+        reasoning: msg.reasoning,
+        reasoning_content: msg.reasoning_content,
+      });
       for (const call of toolCalls) {
         let result: string;
         if (call.function.name === 'read_files') {
-          result = await this.serveReadFiles(call.function.arguments, ctx);
+          result = await this.serveReadFiles(call.function.arguments, evidenceCtx);
         } else if (call.function.name === 'search_code') {
-          result = await this.serveSearch(call.function.arguments, ctx);
+          result = await this.serveSearch(call.function.arguments, evidenceCtx);
         } else {
           result = `Unknown tool ${call.function.name}`;
         }
         messages.push({ role: 'tool', tool_call_id: call.id, content: result });
       }
     }
-    return lastContent; // hit the round cap; return whatever we last got
+    if (requiresEvidence && !hasEvidence) {
+      throw new Error(`${this.label} (${this.model}) did not obtain the required workspace code evidence. Try a more capable tool-using model.`);
+    }
+    return ''; // Grounded tool budget exhaustion still permits final synthesis.
   }
 
   private async serveSearch(argsJson: string, ctx: RepoContext): Promise<string> {
@@ -279,7 +322,7 @@ export class OpenAICompatibleProvider implements PlanProvider {
     } catch {
       return '(could not parse search_code arguments)';
     }
-    if (!query) {
+    if (!query.trim()) {
       return '(empty query)';
     }
     ctx.onProgress?.(`Searching for “${query}”`);
@@ -291,7 +334,7 @@ export class OpenAICompatibleProvider implements PlanProvider {
     try {
       const parsed = JSON.parse(argsJson || '{}') as { paths?: unknown };
       if (Array.isArray(parsed.paths)) {
-        paths = parsed.paths.filter((p): p is string => typeof p === 'string').slice(0, MAX_FILES_PER_CALL);
+        paths = parsed.paths.filter((p): p is string => typeof p === 'string' && Boolean(p.trim())).slice(0, MAX_FILES_PER_CALL);
       }
     } catch {
       return '(could not parse read_files arguments)';
@@ -317,8 +360,11 @@ export class OpenAICompatibleProvider implements PlanProvider {
   private async chat(
     messages: ChatMessage[],
     opts: { tools?: unknown[]; toolChoice?: 'auto' | 'required'; json?: boolean; signal?: AbortSignal },
-  ): Promise<{ content: string; tool_calls?: ToolCall[] }> {
-    const body: Record<string, unknown> = { model: this.model, messages, temperature: 0 };
+    allowToolParseRetry = true,
+  ): Promise<Pick<ChatMessage, 'content' | 'tool_calls' | 'reasoning' | 'reasoning_content'>> {
+    opts.signal?.throwIfAborted();
+    const body: Record<string, unknown> = { model: this.model, messages };
+    if (this.temperature !== null) body.temperature = this.temperature;
     if (opts.tools) {
       body.tools = opts.tools;
       body.tool_choice = opts.toolChoice ?? 'auto';
@@ -337,11 +383,26 @@ export class OpenAICompatibleProvider implements PlanProvider {
     });
     if (!resp.ok) {
       const detail = await resp.text().catch(() => '');
+      opts.signal?.throwIfAborted();
+      if (allowToolParseRetry && opts.tools && resp.status === 500 && /\berror parsing tool call\b/.test(detail)) {
+        // Retry only failed tool generation; never put untrusted server details in the prompt.
+        messages.push({
+          role: 'user',
+          content: 'The previous tool call could not be parsed. Call a declared tool with valid JSON arguments matching its declared parameters.',
+        });
+        return this.chat(messages, opts, false);
+      }
       throw new Error(`${this.label} API ${resp.status}: ${detail.slice(0, 300)}`);
     }
-    const data = (await resp.json()) as { choices?: { message?: { content?: unknown; tool_calls?: ToolCall[] } }[] };
+    const data = (await resp.json()) as { choices?: { message?: {
+      content?: unknown; tool_calls?: ToolCall[]; reasoning?: unknown; reasoning_content?: unknown;
+    } }[] };
     const m = data.choices?.[0]?.message ?? {};
-    return { content: typeof m.content === 'string' ? m.content : '', tool_calls: m.tool_calls };
+    return {
+      content: typeof m.content === 'string' ? m.content : '', tool_calls: m.tool_calls,
+      reasoning: typeof m.reasoning === 'string' ? m.reasoning : undefined,
+      reasoning_content: typeof m.reasoning_content === 'string' ? m.reasoning_content : undefined,
+    };
   }
 
   /** Force a JSON object, validate with the given parser, retry once on failure. */

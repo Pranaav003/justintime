@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import esbuild from 'esbuild';
 
 const watch = process.argv.includes('--watch');
@@ -6,8 +5,8 @@ const watch = process.argv.includes('--watch');
 /**
  * Extension-host bundle. The VS Code extension host loads this via require(),
  * so it must be CommonJS. `vscode` is provided by the host at runtime and must
- * stay external. ESM-only dependencies (e.g. the Claude Agent SDK) are bundled
- * and transpiled to CJS by esbuild.
+ * stay external. The Claude Agent SDK also stays external so its runtime
+ * package paths remain intact.
  * @type {import('esbuild').BuildOptions}
  */
 const extensionConfig = {
@@ -43,11 +42,7 @@ const webviewConfig = {
   logLevel: 'info',
 };
 
-// The webview client is introduced in a later task; only build it once it exists.
-const configs = [extensionConfig];
-if (existsSync('src/webview/client.ts')) {
-  configs.push(webviewConfig);
-}
+const configs = [extensionConfig, webviewConfig];
 
 if (watch) {
   for (const config of configs) {

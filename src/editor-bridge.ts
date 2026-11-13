@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
+import { WorkspacePaths, WorkspacePathError, isFileNotFound } from './workspace-paths';
 import { applyHunks } from './anchor';
 import type { HydratedStep, ApplyOutcome } from './types';
 
@@ -8,8 +11,7 @@ import type { HydratedStep, ApplyOutcome } from './types';
  * WorkspaceEdit-based application (dirty-buffer safe, integrates with undo), and
  * the native diff editor via a virtual-document content provider.
  *
- * Not unit-tested (importing `vscode` requires the extension host); covered by
- * the Task 11 E2E suite.
+ * Filesystem boundaries have focused mocked-host tests and extension-host coverage.
  */
 
 export interface EditorBridgeConfig {
@@ -55,11 +57,13 @@ export class EditorBridge implements vscode.Disposable {
   private current?: { uri: vscode.Uri; range: vscode.Range };
   private readonly disposables: vscode.Disposable[] = [];
   private readonly diffProvider = new DiffContentProvider();
+  private readonly paths: WorkspacePaths;
 
   constructor(
-    private readonly workspaceRoot: string,
+    workspaceRoot: string,
     config: EditorBridgeConfig,
   ) {
+    this.paths = new WorkspacePaths(workspaceRoot);
     this.targetDecoration = vscode.window.createTextEditorDecorationType({
       backgroundColor: config.highlightColor,
       isWholeLine: true,
@@ -77,20 +81,33 @@ export class EditorBridge implements vscode.Disposable {
     );
   }
 
-  private uriFor(relPath: string): vscode.Uri {
-    return vscode.Uri.joinPath(vscode.Uri.file(this.workspaceRoot), relPath);
+  private async uriFor(relPath: string): Promise<vscode.Uri> {
+    return vscode.Uri.file(await this.paths.resolve(relPath));
   }
 
   /** Bounded, noise-excluded list of workspace-relative file paths for the repo map. */
   async listFiles(): Promise<string[]> {
     const exclude =
       '{**/node_modules/**,**/.git/**,**/dist/**,**/dist-e2e/**,**/dist-smoke/**,**/out/**,**/build/**,**/.vscode-test/**,**/coverage/**,**/*.map,**/*.vsix,**/*.lock,**/*-lock.json}';
-    const uris = await vscode.workspace.findFiles('**/*', exclude, 600);
-    return uris.map((u) => vscode.workspace.asRelativePath(u, false)).sort();
+    await this.paths.canonicalRoot();
+    const pattern = new vscode.RelativePattern(vscode.Uri.file(this.paths.root), '**/*');
+    const uris = await vscode.workspace.findFiles(pattern, exclude, 600);
+    await this.paths.canonicalRoot();
+    const files: string[] = [];
+    for (const uri of uris.slice(0, 600)) {
+      try {
+        const absolute = await this.paths.validateAbsolute(uri.fsPath);
+        files.push(path.relative(this.paths.root, absolute).split(path.sep).join('/'));
+      } catch (error) {
+        if (!(error instanceof WorkspacePathError)) throw error;
+      }
+    }
+    return files.sort();
   }
 
   /** Grep the workspace (repo-map files) for a keyword/regex; returns file:line matches. */
-  async searchCode(query: string): Promise<string> {
+  async searchCode(query: string, signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     let re: RegExp | undefined;
     try {
       re = new RegExp(query, 'i');
@@ -101,13 +118,16 @@ export class EditorBridge implements vscode.Disposable {
     const matches = (line: string): boolean => (re ? re.test(line) : line.toLowerCase().includes(needle));
 
     const files = await this.listFiles();
+    signal?.throwIfAborted();
     const out: string[] = [];
     const MAX = 40;
     for (const rel of files) {
       if (out.length >= MAX) {
         break;
       }
+      signal?.throwIfAborted();
       const content = await this.readFile(rel);
+      signal?.throwIfAborted();
       if (content === undefined) {
         continue;
       }
@@ -121,26 +141,40 @@ export class EditorBridge implements vscode.Disposable {
     return out.length > 0 ? out.join('\n') : `(no matches for "${query}")`;
   }
 
+  private async openFile(uri: vscode.Uri): Promise<vscode.TextDocument | undefined> {
+    try {
+      return await vscode.workspace.openTextDocument(uri);
+    } catch (error) {
+      await this.paths.validateAbsolute(uri.fsPath);
+      // Some hosts drop the resolver's error code. Confirm absence on disk,
+      // while preserving any explicit permission/unavailable error from the host.
+      if (error && typeof error === 'object' && 'code' in error && error.code !== undefined && !isFileNotFound(error)) throw error;
+      try {
+        await fs.stat(uri.fsPath);
+      } catch (statError) {
+        if (!isFileNotFound(statError)) throw statError;
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
   /** Current content of a workspace-relative file, or undefined if it does not exist. */
   async readFile(relPath: string): Promise<string | undefined> {
-    try {
-      const doc = await vscode.workspace.openTextDocument(this.uriFor(relPath));
-      return doc.getText();
-    } catch {
-      return undefined;
-    }
+    const uri = await this.uriFor(relPath);
+    const doc = await this.openFile(uri);
+    if (!doc) return undefined;
+    await this.paths.validateAbsolute(uri.fsPath);
+    return doc.getText();
   }
 
   /** Open + reveal + highlight the target range. startLine/endLine are 1-based, advisory. */
   async navigateTo(relPath: string, startLine: number, endLine: number): Promise<void> {
-    const uri = this.uriFor(relPath);
-    let doc: vscode.TextDocument;
-    try {
-      doc = await vscode.workspace.openTextDocument(uri);
-    } catch {
-      // Target may not exist yet (create step) — nothing to navigate to.
-      return;
-    }
+    const uri = await this.uriFor(relPath);
+    const doc = await this.openFile(uri);
+    // Target may not exist yet (create step) — nothing to navigate to.
+    if (!doc) return;
+    await this.paths.validateAbsolute(uri.fsPath);
     // Reuse a single preview tab in the main editor column instead of piling up
     // a new permanent tab per step; keep focus on the explanation panel.
     const editor = await vscode.window.showTextDocument(doc, {
@@ -148,6 +182,7 @@ export class EditorBridge implements vscode.Disposable {
       preview: true,
       preserveFocus: true,
     });
+    await this.paths.validateAbsolute(uri.fsPath);
     const range = this.clampRange(doc, startLine, endLine);
     editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
     this.current = { uri, range };
@@ -181,6 +216,7 @@ export class EditorBridge implements vscode.Disposable {
 
   /** Open a native diff editor comparing before/after for a step. */
   async showDiff(title: string, relPath: string, beforeText: string, afterText: string): Promise<void> {
+    await this.paths.resolve(relPath);
     const [left, right] = this.diffProvider.register(relPath, beforeText, afterText);
     await vscode.commands.executeCommand('vscode.diff', left, right, title, {
       preview: true,
@@ -210,8 +246,9 @@ export class EditorBridge implements vscode.Disposable {
   }
 
   private async applyEdit(step: HydratedStep): Promise<ApplyOutcome> {
-    const uri = this.uriFor(step.primaryFile);
+    const uri = await this.uriFor(step.primaryFile);
     const doc = await vscode.workspace.openTextDocument(uri);
+    await this.paths.validateAbsolute(uri.fsPath);
     const text = doc.getText();
     const res = applyHunks(text, step.hunks ?? []);
     if (res.status === 'error') {
@@ -220,12 +257,14 @@ export class EditorBridge implements vscode.Disposable {
     const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(text.length));
     const edit = new vscode.WorkspaceEdit();
     edit.replace(uri, fullRange, res.text);
+    await this.paths.validateAbsolute(uri.fsPath);
     const ok = await vscode.workspace.applyEdit(edit);
     if (!ok) {
       return { status: 'error', message: 'applyEdit returned false' };
     }
     // Persist so the change lands on disk and stays consistent with the
     // fs-based rollback store (the edit otherwise lives only in the buffer).
+    await this.paths.validateAbsolute(uri.fsPath);
     const saved = await doc.save();
     if (!saved) {
       return { status: 'error', message: 'doc.save() returned false — file not persisted' };
@@ -234,12 +273,13 @@ export class EditorBridge implements vscode.Disposable {
   }
 
   private async applyCreate(step: HydratedStep): Promise<ApplyOutcome> {
-    const uri = this.uriFor(step.primaryFile);
+    const uri = await this.uriFor(step.primaryFile);
     const edit = new vscode.WorkspaceEdit();
     edit.createFile(uri, {
       ignoreIfExists: false,
       contents: Buffer.from(step.fullFileContent ?? '', 'utf8'),
     });
+    await this.paths.validateAbsolute(uri.fsPath);
     const ok = await vscode.workspace.applyEdit(edit);
     // No doc.save() needed: WorkspaceEdit.createFile with 'contents' uses the VS Code
     // filesystem API and writes directly to disk (not a buffer-level edit), so the
@@ -249,9 +289,10 @@ export class EditorBridge implements vscode.Disposable {
   }
 
   private async applyDelete(step: HydratedStep): Promise<ApplyOutcome> {
-    const uri = this.uriFor(step.primaryFile);
+    const uri = await this.uriFor(step.primaryFile);
     const edit = new vscode.WorkspaceEdit();
     edit.deleteFile(uri, { ignoreIfNotExists: true });
+    await this.paths.validateAbsolute(uri.fsPath);
     const ok = await vscode.workspace.applyEdit(edit);
     // No doc.save() needed: deleteFile is a filesystem-level operation (see applyCreate comment). (Finding 6)
     return ok ? { status: 'applied' } : { status: 'error', message: 'deleteFile failed' };
@@ -261,8 +302,12 @@ export class EditorBridge implements vscode.Disposable {
     if (!step.renameTo) {
       return { status: 'error', message: 'rename step missing renameTo' };
     }
+    const source = await this.uriFor(step.primaryFile);
+    const destination = await this.uriFor(step.renameTo);
     const edit = new vscode.WorkspaceEdit();
-    edit.renameFile(this.uriFor(step.primaryFile), this.uriFor(step.renameTo), { overwrite: false });
+    edit.renameFile(source, destination, { overwrite: false });
+    await this.paths.validateAbsolute(source.fsPath);
+    await this.paths.validateAbsolute(destination.fsPath);
     const ok = await vscode.workspace.applyEdit(edit);
     // No doc.save() needed: renameFile is a filesystem-level operation (see applyCreate comment). (Finding 6)
     return ok ? { status: 'applied' } : { status: 'error', message: 'renameFile failed' };

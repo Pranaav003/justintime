@@ -7,6 +7,7 @@ import { ExplanationPanel } from './webview/panel';
 import { RollbackStore, type RevertResult } from './rollback-store';
 import { ClaudeAgentProvider } from './claude-bridge';
 import { OpenAICompatibleProvider } from './openai-provider';
+import { CodexCliProvider } from './codex-provider';
 import { makeClaudeQuery } from './sdk-adapter';
 import { VscodeSnapshotFs } from './vscode-snapshot-fs';
 import type { PlanProvider } from './plan-source';
@@ -47,6 +48,37 @@ let extContext: vscode.ExtensionContext;
 let output: vscode.OutputChannel | undefined;
 /** Generation counter for runWalkthrough; incremented on each invocation to detect superseded starts. */
 let runGeneration = 0;
+const workspaceStores = new Map<string, Promise<RollbackStore>>();
+
+function workspaceStore(workspaceRoot: string): Promise<RollbackStore> {
+  let pending = workspaceStores.get(workspaceRoot);
+  if (!pending) {
+    pending = RollbackStore.forWorkspace(
+      new VscodeSnapshotFs(), extContext.globalStorageUri.fsPath, workspaceRoot,
+      new VscodeSnapshotFs(workspaceRoot),
+    );
+    workspaceStores.set(workspaceRoot, pending);
+    void pending.catch(() => {
+      if (workspaceStores.get(workspaceRoot) === pending) workspaceStores.delete(workspaceRoot);
+    });
+  }
+  return pending;
+}
+
+async function command(action: () => Promise<unknown> | undefined): Promise<void> {
+  try { await action(); } catch (error) {
+    log('error', 'Command failed', error);
+    void vscode.window.showErrorMessage(`JustInTime: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function revertWorkspace(): Promise<RevertResult> {
+  // Invalidate queued provider factories and cancel work before joining the mutation queue.
+  disposeSession();
+  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (!root) return { restored: 0, deleted: 0, errors: [] };
+  return (await workspaceStore(root)).revertAll();
+}
 
 /** Structured log to the JustInTime output channel (timestamp/level/type/stack). */
 function log(level: LogLevel, message: string, error?: unknown): void {
@@ -59,6 +91,18 @@ async function defaultProvider(maxSteps: number): Promise<PlanProvider> {
   const cfg = vscode.workspace.getConfiguration('justintime');
   const provider = cfg.get<string>('provider', 'claude-agent-sdk');
   const model = cfg.get<string>('model') || undefined;
+
+  if (provider === 'codex-cli') {
+    // Executables are machine preferences; workspace settings cannot select a process to run.
+    const executable = cfg.inspect<string>('codexExecutable');
+    return new CodexCliProvider({
+      model,
+      maxSteps,
+      executable: executable?.globalValue || executable?.defaultValue || undefined,
+      workspaceRoots: vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath),
+      log,
+    });
+  }
 
   if (provider === 'claude-agent-sdk') {
     // Read the stored key directly from SecretStorage and pass it to the provider
@@ -83,6 +127,7 @@ async function defaultProvider(maxSteps: number): Promise<PlanProvider> {
     baseUrl,
     apiKey,
     model: model ?? preset.defaultModel,
+    ...(provider === 'ollama' ? { temperature: null } : {}),
     label: preset.label,
     maxSteps,
     log,
@@ -130,18 +175,19 @@ function resolveClaudeExecutable(configured?: string): string | undefined {
 
 export function activate(context: vscode.ExtensionContext): JustInTimeApi {
   extContext = context;
+  workspaceStores.clear();
   output = vscode.window.createOutputChannel('JustInTime');
   context.subscriptions.push(output);
   log('info', `JustInTime activated (v${context.extension?.packageJSON?.version ?? '?'})`);
   context.subscriptions.push(
-    vscode.commands.registerCommand('justintime.start', () => void startCommand()),
-    vscode.commands.registerCommand('justintime.explain', () => void startCommand('explain')),
-    vscode.commands.registerCommand('justintime.solve', () => void startCommand('solve')),
+    vscode.commands.registerCommand('justintime.start', () => command(() => startCommand())),
+    vscode.commands.registerCommand('justintime.explain', () => command(() => startCommand('explain'))),
+    vscode.commands.registerCommand('justintime.solve', () => command(() => startCommand('solve'))),
     vscode.commands.registerCommand('justintime.pause', () => session?.orchestrator.pause()),
-    vscode.commands.registerCommand('justintime.resume', () => void session?.orchestrator.resume()),
-    vscode.commands.registerCommand('justintime.skip', () => void session?.orchestrator.skip()),
-    vscode.commands.registerCommand('justintime.revertAll', () => void revertAllCommand()),
-    vscode.commands.registerCommand('justintime.setApiKey', () => void setApiKey()),
+    vscode.commands.registerCommand('justintime.resume', () => command(() => session?.orchestrator.resume())),
+    vscode.commands.registerCommand('justintime.skip', () => command(() => session?.orchestrator.skip())),
+    vscode.commands.registerCommand('justintime.revertAll', () => command(revertAllCommand)),
+    vscode.commands.registerCommand('justintime.setApiKey', () => command(setApiKey)),
   );
 
   // A one-click launcher in the status bar so you don't need the Command Palette.
@@ -154,13 +200,13 @@ export function activate(context: vscode.ExtensionContext): JustInTimeApi {
 
   return {
     setProviderFactory: (factory) => {
+      ++runGeneration;
       providerFactory = factory;
     },
     start: (problem, mode) => runWalkthrough(problem, mode ?? 'solve'),
     apply: () => session?.orchestrator.apply() ?? Promise.resolve(),
     skip: () => session?.orchestrator.skip() ?? Promise.resolve(),
-    revertAll: () =>
-      session?.orchestrator.revertAll() ?? Promise.resolve({ restored: 0, deleted: 0, errors: [] }),
+    revertAll: revertWorkspace,
     getState: () => session?.orchestrator.getState(),
   };
 }
@@ -225,6 +271,7 @@ async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<v
   try {
     provider = await providerFactory(maxSteps);
   } catch (err) {
+    if (gen !== runGeneration) return;
     log('error', 'Failed to initialize provider', err);
     void vscode.window.showErrorMessage(`JustInTime: ${err instanceof Error ? err.message : String(err)}`);
     return;
@@ -235,41 +282,42 @@ async function runWalkthrough(problem: string, mode: WalkthroughMode): Promise<v
     return;
   }
 
-  disposeSession();
+  try {
+    const rollback = await workspaceStore(workspaceRoot);
+    if (gen !== runGeneration) return;
+    disposeSession(false);
 
-  const panel = new ExplanationPanel(extContext.extensionUri);
-  const editor = new EditorBridge(workspaceRoot, { highlightColor, secondaryHighlightColor });
-  const rollback = new RollbackStore(
-    new VscodeSnapshotFs(),
-    extContext.globalStorageUri.fsPath,
-    globalThis.crypto.randomUUID(),
-  );
-  const orchestrator = new Orchestrator(provider, editor, panel, rollback, {
-    workspaceRoot,
-    maxSteps,
-    showPrerequisites,
-    analysisTimeoutSeconds: config.get<number>('analysisTimeoutSeconds', 600),
-    log,
-  });
+    const panel = new ExplanationPanel(extContext.extensionUri);
+    const editor = new EditorBridge(workspaceRoot, { highlightColor, secondaryHighlightColor });
+    const orchestrator = new Orchestrator(provider, editor, panel, rollback, {
+      workspaceRoot,
+      maxSteps,
+      showPrerequisites,
+      analysisTimeoutSeconds: config.get<number>('analysisTimeoutSeconds', 600),
+      log,
+    });
 
-  session = { orchestrator, editor, panel };
-  panel.onDidDispose(() => {
-    if (session?.panel === panel) {
-      editor.dispose();
-      session = undefined;
-    }
-  });
+    session = { orchestrator, editor, panel };
+    panel.onDidDispose(() => {
+      if (session?.panel === panel) {
+        ++runGeneration;
+        session = undefined;
+        orchestrator.dispose();
+        editor.dispose();
+      }
+    });
 
-  await orchestrator.start(problem, mode);
+    await orchestrator.start(problem, mode);
+  } catch (err) {
+    if (gen !== runGeneration) return;
+    log('error', 'Failed to start walkthrough', err);
+    void vscode.window.showErrorMessage(`JustInTime: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 async function revertAllCommand(): Promise<void> {
-  if (!session) {
-    void vscode.window.showInformationMessage('No active JustInTime walkthrough to revert.');
-    return;
-  }
-  const result = await session.orchestrator.revertAll();
-  const errorNote = result.errors.length ? ` (${result.errors.length} error(s))` : '';
+  const result = await revertWorkspace();
+  const errorNote = result.errors.length ? ` (${result.errors.length} error(s): ${result.errors.join('; ')})` : '';
   void vscode.window.showInformationMessage(
     `JustInTime reverted ${result.restored} file(s), removed ${result.deleted}${errorNote}.`,
   );
@@ -282,6 +330,7 @@ async function setApiKey(): Promise<void> {
       { label: 'OpenAI', description: 'api.openai.com — needs an API key + model', id: 'openai' },
       { label: 'Ollama (local)', description: 'localhost:11434 — usually no key; set a model', id: 'ollama' },
       { label: 'Custom (OpenAI-compatible)', description: 'Any /v1 endpoint — base URL + key + model', id: 'custom' },
+      { label: 'Codex CLI', description: 'Uses your existing Codex login. Defaults to gpt-6-sol.', id: 'codex-cli' },
     ],
     { title: 'JustInTime — choose a provider', placeHolder: 'Which model provider?' },
   );
@@ -290,6 +339,24 @@ async function setApiKey(): Promise<void> {
   }
   const cfg = vscode.workspace.getConfiguration('justintime');
   const G = vscode.ConfigurationTarget.Global;
+
+  if (pick.id === 'codex-cli') {
+    // Reselection preserves deliberate model values and their configuration scope.
+    if (cfg.get<string>('provider') !== 'codex-cli') {
+      // Provider/model are window-scoped, including single-folder .vscode settings.
+      const active = vscode.workspace.getConfiguration('justintime', vscode.workspace.workspaceFolders?.[0]?.uri);
+      for (const key of ['provider', 'model']) {
+        const values = active.inspect(key);
+        if (values?.workspaceValue !== undefined || values?.workspaceFolderValue !== undefined) {
+          await cfg.update(key, undefined, vscode.ConfigurationTarget.Workspace);
+        }
+      }
+      await cfg.update('model', 'gpt-6-sol', G);
+      await cfg.update('provider', 'codex-cli', G);
+    }
+    void vscode.window.showInformationMessage('JustInTime: provider set to Codex CLI using your existing Codex login.');
+    return;
+  }
 
   if (pick.id === 'claude-agent-sdk') {
     const key = await vscode.window.showInputBox({
@@ -367,11 +434,13 @@ async function setApiKey(): Promise<void> {
   );
 }
 
-function disposeSession(): void {
+function disposeSession(invalidate = true): void {
+  if (invalidate) ++runGeneration;
   // Clear `session` first so the panel's onDidDispose callback (fired
   // synchronously by panel.dispose) doesn't re-dispose the editor.
   const s = session;
   session = undefined;
+  s?.orchestrator.dispose();
   s?.editor.dispose();
   s?.panel.dispose();
 }

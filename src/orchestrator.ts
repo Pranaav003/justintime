@@ -1,4 +1,4 @@
-import { resolve as pathResolve, relative as pathRelative } from 'node:path';
+import { resolve as pathResolve, relative as pathRelative, isAbsolute, win32 } from 'node:path';
 import { initialState, transition, type SessionState, type WalkthroughEvent } from './state-machine';
 import { applyHunks, locateSnippet } from './anchor';
 import type { OutlineStep, WalkthroughOutline, HydratedStep, ApplyOutcome, WalkthroughMode } from './types';
@@ -16,7 +16,7 @@ import type { RevertResult } from './rollback-store';
 
 export interface EditorPort {
   listFiles(): Promise<string[]>;
-  searchCode(query: string): Promise<string>;
+  searchCode(query: string, signal?: AbortSignal): Promise<string>;
   navigateTo(relPath: string, startLine: number, endLine: number): Promise<void>;
   showDiff(title: string, relPath: string, before: string, after: string): Promise<void>;
   applyStep(step: HydratedStep): Promise<ApplyOutcome>;
@@ -40,6 +40,7 @@ export interface PanelPort {
 }
 
 export interface RollbackPort {
+  runExclusive<T>(operation: () => Promise<T>): Promise<T>;
   snapshotBeforeApply(step: number, absPath: string): Promise<void>;
   revertAll(): Promise<RevertResult>;
   hasSnapshots(): boolean;
@@ -75,46 +76,74 @@ export class Orchestrator {
   private appliedCount = 0;
   private skippedCount = 0;
   private registered = false;
-  private inflight?: AbortController;
-  /** Per-session AbortController for chat asks — aborted by cancel() and reused across calls. */
-  private chatAc: AbortController = new AbortController();
+  private started = false;
   private cancelled = false;
   private timedOut = false;
+  private readonly operations = new Set<() => void>();
 
-  /** Run a provider call with a soft "still working" nudge and a hard abort timeout. */
-  private async withTimeout<T>(op: (signal: AbortSignal) => Promise<T>, onSoft: () => void): Promise<T> {
-    this.cancelled = false;
-    this.timedOut = false;
-    this.inflight = new AbortController();
-    const hardMs = (this.opts.analysisTimeoutSeconds ?? DEFAULT_ANALYSIS_TIMEOUT_SEC) * 1000;
-    const soft = setTimeout(onSoft, SOFT_TIMEOUT_MS);
-    const hard =
-      hardMs > 0
-        ? setTimeout(() => {
-            this.timedOut = true;
-            this.inflight?.abort();
-          }, hardMs)
-        : undefined;
-    try {
-      return await op(this.inflight.signal);
-    } finally {
+  private alive(): boolean { return !this.cancelled && !this.timedOut; }
+
+  private assertAlive(signal?: AbortSignal): void {
+    if (!this.alive() || signal?.aborted) throw new Error('Walkthrough operation ended.');
+  }
+
+  /** Controllers and timers belong to one operation; abort also settles providers that ignore it. */
+  private async withTimeout<T>(op: (signal: AbortSignal) => Promise<T>, onSoft: () => void, timeoutSeconds = this.opts.analysisTimeoutSeconds ?? DEFAULT_ANALYSIS_TIMEOUT_SEC): Promise<T> {
+    this.assertAlive();
+    const controller = new AbortController();
+    const hardMs = timeoutSeconds * 1000;
+    let rejectAbort!: (error: unknown) => void;
+    const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const onAbort = () => rejectAbort(new Error(this.timedOut ? 'Operation timed out.' : 'Operation cancelled.'));
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+    const soft = setTimeout(() => { if (this.alive() && !controller.signal.aborted) onSoft(); }, SOFT_TIMEOUT_MS);
+    const hard = hardMs > 0 ? setTimeout(() => {
+      this.timedOut = true;
+      for (const stop of this.operations) stop();
+    }, hardMs) : undefined;
+    const stop = () => {
       clearTimeout(soft);
-      if (hard) {
-        clearTimeout(hard);
-      }
+      clearTimeout(hard);
+      controller.abort();
+    };
+    this.operations.add(stop);
+    try {
+      return await Promise.race([op(controller.signal), aborted]);
+    } finally {
+      controller.signal.removeEventListener('abort', onAbort);
+      stop();
+      this.operations.delete(stop);
     }
   }
 
-  /** Abort the in-flight analysis/hydration (from the panel Cancel button). */
-  cancel(): void {
+  private async providerRead(signal: AbortSignal, path: string): Promise<string | undefined> {
+    this.assertAlive(signal);
+    const value = await this.editor.readFile(path);
+    this.assertAlive(signal);
+    return value;
+  }
+
+  private async providerSearch(signal: AbortSignal, query: string): Promise<string> {
+    this.assertAlive(signal);
+    const value = await this.editor.searchCode(query, signal);
+    this.assertAlive(signal);
+    return value;
+  }
+
+  private progress(signal: AbortSignal, text: string): void {
+    if (this.alive() && !signal.aborted) this.panel.showProgress(text);
+  }
+
+  /** Silent and idempotent: closing a panel must not render into a disposed webview. */
+  dispose(): void {
+    if (this.cancelled) return;
     this.cancelled = true;
-    this.inflight?.abort();
-    // Also abort any in-flight chat asks so they don't hold references or burn
-    // API tokens after the session is torn down (Finding 4).
-    this.chatAc.abort();
-    this.chatAc = new AbortController();
-    // Reset immediately so the panel doesn't sit on a spinner while the
-    // subprocess winds down.
+    for (const stop of this.operations) stop();
+  }
+
+  cancel(): void {
+    if (!this.alive()) return;
+    this.dispose();
     this.panel.showIdle('Cancelled. Run “JustInTime: Start Walkthrough” to begin again.');
   }
 
@@ -131,6 +160,9 @@ export class Orchestrator {
   }
 
   async start(problem: string, mode: WalkthroughMode = 'solve'): Promise<void> {
+    // Each conductor owns one walkthrough; replacements get a fresh instance.
+    if (this.started || !this.alive()) return;
+    this.started = true;
     if (!this.registered) {
       // Return the promise so hosts/tests that care can await it; the real
       // webview host ignores the return value.
@@ -149,6 +181,8 @@ export class Orchestrator {
       // Best-effort; fall back to the model globbing on its own.
     }
 
+    if (!this.alive()) return;
+
     let outline: WalkthroughOutline;
     try {
       outline = await this.withTimeout(
@@ -157,12 +191,12 @@ export class Orchestrator {
             workspaceRoot: this.opts.workspaceRoot,
             mode,
             signal,
-            onProgress: (t) => this.panel.showProgress(t),
+            onProgress: (t) => this.progress(signal, t),
             repoMap,
-            readFile: (p) => this.editor.readFile(p),
-            searchCode: (q) => this.editor.searchCode(q),
+            readFile: (p) => this.providerRead(signal, p),
+            searchCode: (q) => this.providerSearch(signal, q),
           }),
-        () => this.panel.showProgress('Still working on a large codebase… you can Cancel, or start again with a narrower question.'),
+        () => this.panel.showProgress('Still waiting for the model… you can Cancel, or start again with a narrower question.'),
       );
     } catch (e) {
       if (this.cancelled) {
@@ -176,15 +210,23 @@ export class Orchestrator {
       );
       return;
     }
+    if (!this.alive()) return;
     this.outline = outline;
     if (!this.dispatch({ type: 'START', totalSteps: outline.steps.length })) {
       this.panel.notifyError('Could not start walkthrough (no steps).');
       return;
     }
-    await this.activateCurrentStep();
+    try {
+      await this.activateCurrentStep();
+    } catch (e) {
+      if (!this.alive()) return;
+      this.opts.log?.('error', 'Could not activate walkthrough step', e);
+      this.panel.notifyError(`Could not prepare walkthrough: ${errMsg(e)}`);
+    }
   }
 
   async revertAll(): Promise<RevertResult> {
+    this.dispose();
     return this.rollback.revertAll();
   }
 
@@ -221,6 +263,7 @@ export class Orchestrator {
   }
 
   private dispatch(ev: WalkthroughEvent): boolean {
+    if (!this.alive()) return false;
     const r = transition(this.state, ev);
     if (r.ok) {
       this.state = r.state;
@@ -234,6 +277,7 @@ export class Orchestrator {
   }
 
   private async activateCurrentStep(): Promise<void> {
+    if (!this.alive()) return;
     const step = this.currentOutlineStep();
     if (!step) {
       return;
@@ -244,6 +288,7 @@ export class Orchestrator {
     }
     // Coarse navigation to the target file while we hydrate.
     await this.editor.navigateTo(step.targetFiles[0] ?? '', 1, 1);
+    if (!this.alive()) return;
     if (!this.dispatch({ type: 'NAV_DONE' })) {
       return;
     }
@@ -253,6 +298,7 @@ export class Orchestrator {
     const current: FileState = {};
     for (const f of step.targetFiles) {
       const content = await this.editor.readFile(f);
+      if (!this.alive()) return;
       if (content !== undefined) {
         current[f] = content;
       }
@@ -266,7 +312,7 @@ export class Orchestrator {
             sessionId: this.outline!.sessionId,
             workspaceRoot: this.opts.workspaceRoot,
             signal,
-            onProgress: (t) => this.panel.showProgress(t),
+            onProgress: (t) => this.progress(signal, t),
           }),
         () => this.panel.showProgress(`Still preparing step ${step.stepNumber}… you can Cancel.`),
       );
@@ -284,10 +330,13 @@ export class Orchestrator {
       return;
     }
 
+    if (!this.alive()) return;
+
     // The hydrated primaryFile may differ from the outline's targetFiles (two
     // separate model calls); read it now so we don't false-conflict on ''.
     if (current[hydrated.primaryFile] === undefined) {
       const content = await this.editor.readFile(hydrated.primaryFile);
+      if (!this.alive()) return;
       if (content !== undefined) {
         current[hydrated.primaryFile] = content;
       }
@@ -328,6 +377,7 @@ export class Orchestrator {
     }
 
     await this.editor.navigateTo(hydrated.navigation.file, hydrated.navigation.startLine, hydrated.navigation.endLine);
+    if (!this.alive()) return;
     try {
       await this.editor.showDiff(
         `JustInTime — Step ${step.stepNumber}: ${step.title}`,
@@ -409,6 +459,7 @@ export class Orchestrator {
     // Prefer the content-anchored location over the model's advisory line numbers.
     if (focus.anchor) {
       const content = await this.editor.readFile(focus.file);
+      if (!this.alive()) return;
       const loc = content ? locateSnippet(content, focus.anchor) : undefined;
       if (loc) {
         step.focus = { ...focus, startLine: loc.startLine, endLine: loc.endLine };
@@ -430,9 +481,11 @@ export class Orchestrator {
   }
 
   private async handleMessage(msg: WebviewToHost): Promise<void> {
+    if (!this.alive()) return;
     try {
       await this.route(msg);
     } catch (e) {
+      if (!this.alive()) return;
       // Never let a webview message become an unhandled rejection.
       this.opts.log?.('error', `Message handler failed: ${msg.type}`, e);
       this.panel.notifyError('Something went wrong handling that action. See the JustInTime output log.');
@@ -475,14 +528,14 @@ export class Orchestrator {
     // a model-controlled primaryFile from escaping via '..' segments (Finding 7).
     const abs = pathResolve(this.opts.workspaceRoot, rel);
     const relative = pathRelative(this.opts.workspaceRoot, abs);
-    if (relative.startsWith('..')) {
+    if (!rel || rel.includes('\0') || isAbsolute(rel) || win32.isAbsolute(rel) || !relative || relative === '..' || relative.startsWith('../') || relative.startsWith('..\\')) {
       throw new Error(`path traversal rejected: "${rel}" escapes workspaceRoot`);
     }
     return abs;
   }
 
   async apply(): Promise<void> {
-    if (this.state.phase !== 'waiting_for_apply') {
+    if (!this.alive() || this.state.phase !== 'waiting_for_apply') {
       return;
     }
     const step = this.currentOutlineStep();
@@ -510,17 +563,25 @@ export class Orchestrator {
     // stuck in 'applying' with an unhandled rejection.
     let outcome: ApplyOutcome;
     try {
-      await this.rollback.snapshotBeforeApply(step.stepNumber, this.absPath(hydrated.primaryFile));
-      if (hydrated.changeKind === 'rename' && hydrated.renameTo) {
-        await this.rollback.snapshotBeforeApply(step.stepNumber, this.absPath(hydrated.renameTo));
-      }
-      outcome = await this.editor.applyStep(hydrated);
+      outcome = await this.rollback.runExclusive(async () => {
+        this.assertAlive();
+        await this.rollback.snapshotBeforeApply(step.stepNumber, this.absPath(hydrated.primaryFile));
+        this.assertAlive();
+        if (hydrated.changeKind === 'rename' && hydrated.renameTo) {
+          await this.rollback.snapshotBeforeApply(step.stepNumber, this.absPath(hydrated.renameTo));
+          this.assertAlive();
+        }
+        // Keep the queue occupied until an already-entered editor mutation settles.
+        return this.editor.applyStep(hydrated);
+      });
     } catch (e) {
+      if (!this.alive()) return;
       this.opts.log?.('error', `Apply threw for step ${step.stepNumber}`, e);
       this.dispatch({ type: 'APPLY_FAILED', message: errMsg(e) });
       this.panel.notifyError(`Failed to apply step ${step.stepNumber}: ${errMsg(e)}`);
       return;
     }
+    if (!this.alive()) return;
     if (outcome.status === 'applied') {
       if (!this.dispatch({ type: 'APPLY_DONE' })) {
         // Interrupted while applyStep was awaiting; the change is on disk but
@@ -615,18 +676,18 @@ export class Orchestrator {
         `Why here: ${step.specificExplanation}\n` +
         `Relevant file(s): ${step.targetFiles.join(', ')}`
       : 'No active step.';
-    // Use the session-level chatAc so this question is aborted when cancel() fires
-    // instead of running indefinitely after the walkthrough session is torn down (Finding 4).
     try {
-      const answer = await this.provider.answerQuestion(question, contextText, {
+      const answer = await this.withTimeout((signal) => this.provider.answerQuestion!(question, contextText, {
         workspaceRoot: this.opts.workspaceRoot,
-        signal: this.chatAc.signal,
-        readFile: (p) => this.editor.readFile(p),
-        searchCode: (q) => this.editor.searchCode(q),
-      });
+        signal,
+        readFile: (p) => this.providerRead(signal, p),
+        searchCode: (q) => this.providerSearch(signal, q),
+      }), () => {}, 0);
+      if (!this.alive()) return;
       entry.answer = answer;
       this.panel.postAnswer(id, answer);
     } catch (e) {
+      if (!this.alive()) return;
       entry.error = errMsg(e);
       this.panel.postAnswerError(id, entry.error);
     }

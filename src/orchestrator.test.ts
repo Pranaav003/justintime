@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { Orchestrator, type EditorPort, type PanelPort, type RollbackPort } from './orchestrator';
 import type { PlanProvider, RepoContext, SessionCtx, FileState } from './plan-source';
 import type { OutlineStep, WalkthroughOutline, HydratedStep, ApplyOutcome } from './types';
@@ -130,14 +130,22 @@ class FakePanel implements PanelPort {
 }
 
 class FakeRollback implements RollbackPort {
+  private tail: Promise<unknown> = Promise.resolve();
+  runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(operation);
+    this.tail = result.catch(() => {});
+    return result;
+  }
   snapshots: { step: number; path: string }[] = [];
   reverted = 0;
   async snapshotBeforeApply(step: number, absPath: string): Promise<void> {
     this.snapshots.push({ step, path: absPath });
   }
   async revertAll(): Promise<{ restored: number; deleted: number; errors: string[] }> {
-    this.reverted++;
-    return { restored: this.snapshots.length, deleted: 0, errors: [] };
+    return this.runExclusive(async () => {
+      this.reverted++;
+      return { restored: this.snapshots.length, deleted: 0, errors: [] };
+    });
   }
   hasSnapshots(): boolean {
     return this.snapshots.length > 0;
@@ -381,22 +389,15 @@ describe('Orchestrator', () => {
     expect(orch.getState().phase).toBe('waiting_for_apply');
   });
 
-  it('double-start race: second start() supersedes the first before it registers (Finding 3)', async () => {
-    // Finding 3: if start() is called twice, the first call must be superseded.
-    // We test this at the Orchestrator level (the double-start in extension.ts is
-    // separately guarded by the runGeneration counter).
-    // Calling start() twice on the same orchestrator — the second call re-registers
-    // and must not leave two competing panel handlers.
-    const { orch, panel } = build();
-    // Start once and let it complete outline+hydration.
-    await orch.start('fix it');
-    const rendersAfterFirst = panel.rendered.length;
-    expect(rendersAfterFirst).toBeGreaterThan(0);
-    // Start again — should work cleanly without doubling up handlers.
-    await orch.start('fix it again');
-    // The orchestrator must be in a clean active state for the second run.
-    expect(orch.getState().phase).toBe('waiting_for_apply');
-    expect(orch.getState().currentStep).toBe(1);
+  it('start is one-shot, including after terminal cancellation', async () => {
+    const { orch, panel, provider } = build();
+    const outline = vi.spyOn(provider, 'produceOutline');
+    await orch.start('first');
+    await orch.start('second');
+    orch.cancel();
+    await orch.start('third');
+    expect(outline).toHaveBeenCalledTimes(1);
+    expect(panel.rendered).toHaveLength(1);
   });
 
   it('apply(): absPath rejects path traversal in primaryFile (Finding 7)', async () => {
@@ -525,5 +526,276 @@ describe('Orchestrator', () => {
     await orch.start('x');
     await panel.emit({ type: 'ask', id: 9, question: 'q' });
     expect(panel.answerErrors.some((e) => e.id === 9)).toBe(true);
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+// Flush only deterministic promise work; no elapsed-time polling.
+async function flush() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
+
+describe('terminal lifecycle and complete mutation transactions', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it.each(['cancel', 'dispose'] as const)('%s during mapping never invokes the provider', async (stop) => {
+    const { orch, editor, provider, panel } = build();
+    const gate = deferred<string[]>();
+    editor.listFiles = () => gate.promise;
+    const outline = vi.spyOn(provider, 'produceOutline');
+    const running = orch.start('x');
+    orch[stop]();
+    gate.resolve(['a.ts']);
+    await running;
+    expect(outline).not.toHaveBeenCalled();
+    expect(editor.navigated).toEqual([]);
+    expect(panel.rendered).toEqual([]);
+  });
+
+  it.each(['cancel', 'dispose'] as const)('%s fences ignored-abort outline and retained callbacks', async (stop) => {
+    vi.useFakeTimers();
+    const { orch, editor, provider, panel } = build();
+    const gate = deferred<WalkthroughOutline>();
+    let ctx!: RepoContext;
+    const value = await provider.produceOutline('x', { workspaceRoot: '/repo' });
+    provider.produceOutline = async (_p, context) => { ctx = context; return gate.promise; };
+    const read = vi.spyOn(editor, 'readFile');
+    const search = vi.spyOn(editor, 'searchCode');
+    const running = orch.start('x');
+    await flush();
+    orch[stop]();
+    const progress = panel.progress.length;
+    ctx.onProgress?.('obsolete');
+    await expect(ctx.readFile?.('a.ts')).rejects.toThrow();
+    await expect(ctx.searchCode?.('x')).rejects.toThrow();
+    gate.resolve(value);
+    await running;
+    await vi.runAllTimersAsync();
+    expect(ctx.signal?.aborted).toBe(true);
+    expect(read).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+    expect(editor.navigated).toEqual([]);
+    expect(panel.progress).toHaveLength(progress);
+    expect(panel.rendered).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('hard timeout settles an abort-ignoring outline and silences late completion/progress', async () => {
+    vi.useFakeTimers();
+    const { provider, editor, panel, rollback } = build();
+    const gate = deferred<WalkthroughOutline>();
+    const value = await provider.produceOutline('x', { workspaceRoot: '/repo' });
+    let ctx!: RepoContext;
+    provider.produceOutline = async (_p, context) => { ctx = context; return gate.promise; };
+    const orch = new Orchestrator(provider, editor, panel, rollback, { workspaceRoot: '/repo', analysisTimeoutSeconds: 1 });
+    let settled = false;
+    const running = orch.start('x').then(() => { settled = true; });
+    await flush();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(settled).toBe(true);
+    expect(ctx.signal?.aborted).toBe(true);
+    expect(panel.idle.join(' ')).toContain('timed out');
+    const progress = panel.progress.length;
+    ctx.onProgress?.('late');
+    gate.resolve(value);
+    await running;
+    await flush();
+    expect(panel.progress).toHaveLength(progress);
+    expect(editor.navigated).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('dispose during ignored-abort hydration prevents all later stages', async () => {
+    const { orch, editor, provider, panel } = build();
+    const gate = deferred<HydratedStep>();
+    const value = await provider.hydrateStep(outlineStep(1, 'a.ts'), {}, { sessionId: 's', workspaceRoot: '/repo' });
+    let ctx!: SessionCtx;
+    provider.hydrateStep = async (_s, _c, context) => { ctx = context; return gate.promise; };
+    const diff = vi.spyOn(editor, 'showDiff');
+    const running = orch.start('x');
+    await flush();
+    orch.dispose();
+    const navs = editor.navigated.length;
+    const progress = panel.progress.length;
+    ctx.onProgress?.('late hydrate');
+    gate.resolve(value);
+    await running;
+    expect(ctx.signal?.aborted).toBe(true);
+    expect(editor.navigated).toHaveLength(navs);
+    expect(diff).not.toHaveBeenCalled();
+    expect(panel.rendered).toEqual([]);
+    expect(panel.progress).toHaveLength(progress);
+  });
+
+  it.each(['resolve', 'reject'] as const)('ignored-abort chat %s stays silent after disposal', async (finish) => {
+    const { orch, provider, panel, editor } = build();
+    const gate = deferred<string>();
+    let signal: AbortSignal | undefined;
+    provider.answerQuestion = async (_q, _c, opts?: { signal?: AbortSignal }) => { signal = opts?.signal; return gate.promise; };
+    await orch.start('x');
+    const running = panel.emit({ type: 'ask', id: 1, question: 'why?' });
+    orch.dispose();
+    orch.dispose();
+    if (finish === 'resolve') gate.resolve('late'); else gate.reject(new Error('late'));
+    await running;
+    await panel.emit({ type: 'openLocation', file: 'a.ts', line: 20 });
+    await panel.emit({ type: 'ask', id: 2, question: 'later?' });
+    expect(signal?.aborted).toBe(true);
+    expect(panel.answers).toEqual([]);
+    expect(panel.answerErrors).toEqual([]);
+    expect(panel.idle).toEqual([]);
+    expect(editor.navigated.some(n => n.startLine === 20)).toBe(false);
+  });
+
+  it.each(['navigate', 'read', 'primary-read', 'diff'] as const)('dispose at deferred %s prevents continuation', async (stage) => {
+    const { orch, editor, provider, panel } = build();
+    const gate = deferred<void>();
+    let entered = false;
+    if (stage === 'navigate') editor.navigateTo = async () => { entered = true; await gate.promise; };
+    if (stage === 'read' || stage === 'primary-read') {
+      if (stage === 'primary-read') {
+        const hydrate = provider.hydrateStep.bind(provider);
+        provider.hydrateStep = async (...args) => ({ ...await hydrate(...args), primaryFile: 'other.ts' });
+      }
+      editor.readFile = async (file) => {
+        if (stage === 'read' || file === 'other.ts') { entered = true; await gate.promise; }
+        return FILES['a.ts'];
+      };
+    }
+    if (stage === 'diff') editor.showDiff = async () => { entered = true; await gate.promise; };
+    const hydrate = vi.spyOn(provider, 'hydrateStep');
+    const running = orch.start('x');
+    await flush();
+    expect(entered).toBe(true);
+    orch.dispose();
+    const navs = editor.navigated.length;
+    gate.resolve();
+    await running;
+    expect(panel.rendered).toEqual([]);
+    expect(panel.errors).toEqual([]);
+    expect(editor.navigated).toHaveLength(navs);
+    if (stage === 'navigate' || stage === 'read') expect(hydrate).not.toHaveBeenCalled();
+  });
+
+  it('revert during snapshot invalidates apply before mutation and retains recoverable snapshot', async () => {
+    const { orch, editor, panel, rollback } = build();
+    const gate = deferred<void>();
+    const snapshot = rollback.snapshotBeforeApply.bind(rollback);
+    rollback.snapshotBeforeApply = async (...args) => { await snapshot(...args); await gate.promise; };
+    await orch.start('x');
+    const applying = orch.apply();
+    await flush();
+    const reverting = orch.revertAll();
+    await flush();
+    expect(rollback.reverted).toBe(0);
+    gate.resolve();
+    await Promise.all([applying, reverting]);
+    expect(editor.applied).toEqual([]);
+    expect(rollback.snapshots).toHaveLength(1);
+    expect(rollback.reverted).toBe(1);
+    expect(panel.applied).toEqual([]);
+  });
+
+  it.each([false, true])('entered apply settles before recovery even after disposal (throw=%s)', async (throws) => {
+    const { orch, editor, panel, rollback } = build();
+    const gate = deferred<void>();
+    let content = 'original';
+    editor.applyStep = async () => {
+      content = 'partial';
+      await gate.promise;
+      if (throws) throw new Error('partial failure');
+      content = 'generated';
+      return { status: 'applied' };
+    };
+    rollback.revertAll = () => rollback.runExclusive(async () => {
+      expect(rollback.snapshots).toHaveLength(1);
+      content = 'original';
+      return { restored: 1, deleted: 0, errors: [] };
+    });
+    await orch.start('x');
+    const applying = orch.apply();
+    await flush();
+    expect(content).toBe('partial');
+    orch.dispose();
+    const reverting = orch.revertAll();
+    await flush();
+    expect(content).toBe('partial');
+    gate.resolve();
+    await Promise.all([applying, reverting]);
+    expect(content).toBe('original');
+    expect(panel.errors).toEqual([]);
+    expect(panel.applied).toEqual([]);
+    expect(panel.rendered).toHaveLength(1);
+  });
+
+  it('legal dot-prefixed descendant snapshots, including both rename endpoints', async () => {
+    const { orch, provider, rollback, editor } = build();
+    provider.hydrateStep = async () => ({ stepNumber: 1, primaryFile: '..cache/a.ts', changeKind: 'rename',
+      renameTo: '..cache/b.ts', navigation: { file: '..cache/a.ts', startLine: 1, endLine: 1 }, hazards: [] });
+    await orch.start('rename');
+    await orch.apply();
+    expect(rollback.snapshots).toEqual([{ step: 1, path: '/repo/..cache/a.ts' }, { step: 1, path: '/repo/..cache/b.ts' }]);
+    expect(editor.applied).toHaveLength(1);
+  });
+
+  it('slow chat does not consume the analysis timeout or disable ready steps', async () => {
+    vi.useFakeTimers();
+    const { provider, editor, panel, rollback } = build();
+    const gate = deferred<string>();
+    provider.answerQuestion = () => gate.promise;
+    const orch = new Orchestrator(provider, editor, panel, rollback, { workspaceRoot: '/repo', analysisTimeoutSeconds: 1 });
+    await orch.start('x');
+    const asking = panel.emit({ type: 'ask', id: 1, question: 'long chat' });
+    await vi.advanceTimersByTimeAsync(2000);
+    await orch.apply();
+    expect(panel.applied).toEqual([1]);
+    gate.resolve('answer');
+    await asking;
+    expect(panel.answers).toEqual([{ id: 1, answer: 'answer' }]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('success and rejection clear their own timers before later operations', async () => {
+    vi.useFakeTimers();
+    const { orch, provider, panel } = build();
+    await orch.start('x');
+    expect(vi.getTimerCount()).toBe(0);
+    provider.answerQuestion = async () => { throw new Error('chat failed'); };
+    await panel.emit({ type: 'ask', id: 1, question: 'x' });
+    expect(vi.getTimerCount()).toBe(0);
+    const gate = deferred<string>();
+    provider.answerQuestion = async () => gate.promise;
+    const asking = panel.emit({ type: 'ask', id: 2, question: 'x' });
+    expect(vi.getTimerCount()).toBe(1);
+    orch.dispose();
+    expect(vi.getTimerCount()).toBe(0);
+    await asking;
+    gate.resolve('late');
+    expect(panel.answers).toEqual([]);
+  });
+
+  it('replacement sharing the journal cannot enter snapshots while old apply is pending', async () => {
+    const { orch, editor, panel, rollback } = build();
+    const gate = deferred<ApplyOutcome>();
+    editor.applyStep = () => gate.promise;
+    await orch.start('old');
+    const oldApply = orch.apply();
+    await flush();
+    orch.dispose();
+    const next = new Orchestrator(new FakeProvider(), new FakeEditor({ ...FILES }), new FakePanel(), rollback, { workspaceRoot: '/repo' });
+    await next.start('new');
+    const nextApply = next.apply();
+    await flush();
+    expect(rollback.snapshots).toHaveLength(1);
+    const recovery = next.revertAll();
+    gate.resolve({ status: 'applied' });
+    await Promise.all([oldApply, nextApply, recovery]);
+    expect(rollback.snapshots).toHaveLength(1);
+    expect(rollback.reverted).toBe(1);
+    expect(panel.applied).toEqual([]);
   });
 });

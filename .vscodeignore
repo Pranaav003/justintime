@@ -22,3 +22,9 @@ dist-smoke/**
 # (pathToClaudeCodeExecutable), so exclude all bundled platform binaries to keep
 # the package lean.
 node_modules/@anthropic-ai/claude-agent-sdk-*/**
+
+# Local validation and workflow artifacts
+coverage/**
+.superpowers/**
+.npmrc
+test-baseline.json

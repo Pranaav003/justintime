@@ -4,6 +4,16 @@
  * subagent (design Sections 2.1 & 13).
  */
 
+const ANSWER_DISCIPLINE = `
+Answer discipline:
+- Answer the exact question directly and briefly. Use only the steps needed; keep each explanation to one or two sentences. Do not add unsolicited hypothetical examples or unrelated lessons.
+- Establish behavior from the expressions, control flow, and call targets you read, rather than from symbol names or the question's premise. Distinguish a returned value, a thrown value, and a rejected promise.
+- If a claim depends on another file, read that implementation before making it. Scope absence claims to the files and paths inspected; missing imports or tests alone do not prove a feature is absent.
+- Describe source-based conclusions as analysis. Never claim tests ran or changes succeeded without execution evidence.
+- Cite real code and preserve exact source snippets. Omit unsupported intent or uncertain extra claims.
+- Preserve type, timing, and scope qualifiers when simplifying language semantics. Use words such as only, always, never, synchronous, and asynchronous only when the exact condition is established. A correct result with a broader false rule is not a correct explanation.
+- Answer every requested case explicitly. For comparison questions, cover every named combination, grouping related cases when the step limit requires it.`;
+
 /** Appended to the `claude_code` preset system prompt for the outline phase. */
 export const OUTLINE_SYSTEM_APPEND = `You are producing a JustInTime walkthrough OUTLINE for a code problem.
 
@@ -16,7 +26,7 @@ Rules:
 - specificExplanation: reference actual file paths and real function/variable names in THIS codebase, plus downstream effects.
 - GROUND EVERYTHING in code you actually read. Never invent classes, functions, methods, or features. If the requested change does not fit this codebase, say so in problemSummary rather than fabricating steps.
 - Be efficient: do NOT read or search node_modules, dist, build outputs, .git, or lockfiles. Explore only the source files you actually need — don't crawl the whole tree.
-- Return ONLY the structured outline object.`;
+- Return ONLY the structured outline object.${ANSWER_DISCIPLINE}`;
 
 /** Appended to the `claude_code` preset system prompt for the per-step hydration phase. */
 export const HYDRATE_SYSTEM_APPEND = `You are hydrating ONE step of a JustInTime walkthrough into a concrete change.
@@ -30,7 +40,7 @@ Rules:
 - Return ONLY the structured step object.
 
 Example shape for an 'edit' (copy oldText/context verbatim from the provided content):
-{"stepNumber":1,"primaryFile":"src/foo.ts","changeKind":"edit","navigation":{"file":"src/foo.ts","startLine":10,"endLine":12},"hunks":[{"contextBefore":"function foo() {","oldText":"  return a;","newText":"  return a + b;","contextAfter":"}"}]}`;
+{"stepNumber":1,"primaryFile":"src/foo.ts","changeKind":"edit","navigation":{"file":"src/foo.ts","startLine":10,"endLine":12},"hunks":[{"contextBefore":"function foo() {","oldText":"  return a;","newText":"  return a + b;","contextAfter":"}"}]}${ANSWER_DISCIPLINE}`;
 
 /** A pre-enumerated file list so the model can jump straight to relevant files. */
 function repoMapSection(repoMap?: string[]): string {
@@ -66,7 +76,7 @@ Rules:
 - Do NOT propose edits, fixes, or diffs. If the reader asked "how/why", answer by explaining the existing code, not by changing it.
 - GROUND EVERYTHING in code you actually read via the tools. Never invent classes, functions, methods, or features. If the thing being asked about does NOT exist in this codebase, say so plainly in problemSummary and briefly state what the code you read ACTUALLY does (describe the real code — do not copy this instruction's wording). Keep steps to what the code actually does; do not fabricate to fill the outline.
 - Be efficient: do NOT read or search node_modules, dist, build outputs, .git, or lockfiles. Explore only the source files you actually need — don't crawl the whole tree.
-- Return ONLY the structured outline object.`;
+- Return ONLY the structured outline object.${ANSWER_DISCIPLINE}`;
 
 const EXPLAIN_SHAPE =
   '\n\nReturn JSON of exactly this shape (problemSummary and steps are required):\n' +
@@ -80,7 +90,7 @@ export function buildExplainPrompt(question: string, maxSteps: number, repoMap?:
 }
 
 /** Appended to the preset for the mid-step chat — read-only Q&A about the current step. */
-export const CHAT_SYSTEM_APPEND = `You are answering a developer's follow-up question during a JustInTime walkthrough. This is READ-ONLY: do not propose or make any code changes. Answer concisely and accurately about the code, grounding EVERY statement in code you actually read — never invent classes, methods, or features. If the thing being asked about does not exist in this codebase, say so plainly rather than fabricating. You may read files (Read/Glob/Grep), but do not crawl node_modules, dist, build outputs, or .git. Reply in GitHub-flavored markdown.`;
+export const CHAT_SYSTEM_APPEND = `You are answering a developer's follow-up question during a JustInTime walkthrough. This is READ-ONLY: do not propose or make any code changes. Answer concisely and accurately about the code, grounding EVERY statement in code you actually read — never invent classes, methods, or features. If the thing being asked about does not exist in this codebase, say so plainly rather than fabricating. You may read files (Read/Glob/Grep), but do not crawl node_modules, dist, build outputs, or .git. Reply in GitHub-flavored markdown.${ANSWER_DISCIPLINE}`;
 
 export function buildChatPrompt(contextText: string, question: string): string {
   return `Context for the current walkthrough step:\n${contextText}\n\nThe developer asks:\n${question}`;

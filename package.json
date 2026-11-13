@@ -71,13 +71,15 @@
             "claude-agent-sdk",
             "openai",
             "ollama",
-            "custom"
+            "custom",
+            "codex-cli"
           ],
           "enumDescriptions": [
             "Claude via the Claude Agent SDK (default, first-class).",
             "OpenAI (https://api.openai.com/v1).",
             "Ollama (local, http://localhost:11434/v1).",
-            "Any OpenAI-compatible endpoint (set justintime.baseUrl)."
+            "Any OpenAI-compatible endpoint (set justintime.baseUrl).",
+            "Installed Codex CLI using your existing Codex login (default model: gpt-6-sol)."
           ],
           "default": "claude-agent-sdk",
           "description": "Model provider backend. Use 'JustInTime: Set Provider & API Key' to configure. Claude is first-class; OpenAI/Ollama/custom use an OpenAI-compatible endpoint."
@@ -85,7 +87,7 @@
         "justintime.model": {
           "type": "string",
           "default": "",
-          "description": "Model to use. For Claude, blank = your default. For OpenAI/Ollama/custom, set the model name (e.g. gpt-4o, llama3.1)."
+          "description": "Model to use. For Claude, blank = your default. For Codex CLI, blank = gpt-6-sol. For OpenAI/Ollama/custom, set the model name (e.g. gpt-4o, llama3.1)."
         },
         "justintime.baseUrl": {
           "type": "string",
@@ -96,6 +98,12 @@
           "type": "string",
           "default": "",
           "description": "Path to the `claude` CLI. Blank = auto-detect on PATH. JustInTime uses your installed Claude Code CLI instead of bundling it."
+        },
+        "justintime.codexExecutable": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Absolute path to your installed Codex CLI. Blank = discover a trusted local installation. Workspace overrides are ignored. Uses your existing Codex login."
         },
         "justintime.diffStyle": {
           "type": "string",
@@ -160,18 +168,23 @@
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/vscode": "^1.95.0",
-    "@vitest/coverage-v8": "^2.1.9",
-    "@vscode/test-electron": "^3.0.0",
-    "@vscode/vsce": "^3.2.0",
-    "dompurify": "^3.4.11",
-    "esbuild": "^0.25.12",
+    "@vitest/coverage-v8": "^4.1.12",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.1.0",
+    "dompurify": "^3.4.17",
+    "esbuild": "^0.28.2",
     "jsdom": "^29.1.1",
     "marked": "^18.0.6",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8",
-    "zod": "^4.4.3"
+    "vitest": "^4.1.12",
+    "zod": "^4.6.7"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.205"
+  },
+  "overrides": {
+    "@vscode/vsce": {
+      "minimatch": "11.0.1"
+    }
   }
 }
