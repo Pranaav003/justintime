@@ -2,9 +2,8 @@ import type { OutlineStep, WalkthroughOutline, HydratedStep, WalkthroughMode } f
 
 /**
  * The model-provider seam (design Section 2.1). The orchestrator depends only on
- * this interface, never on a concrete backend. MVP ships ClaudeAgentProvider;
- * an AnthropicMessagesProvider / OpenAIProvider can be added later without
- * touching the orchestrator or UI.
+ * this interface, never on a concrete backend. ClaudeAgentProvider and
+ * OpenAICompatibleProvider implement it for the supported backends.
  */
 
 export interface RepoContext {
@@ -25,9 +24,9 @@ export interface RepoContext {
 }
 
 export interface SessionCtx {
-  /** Provider session id captured during produceOutline, used to resume for hydration. */
+  /** Provider session identifier captured during produceOutline; hydration is stateless. */
   sessionId: string;
-  /** Analysis cwd — must match the outline call so the SDK can resume the session. */
+  /** Absolute workspace root used as the analysis cwd. */
   workspaceRoot: string;
   /** Aborts the in-flight query (cancel / timeout). */
   signal?: AbortSignal;

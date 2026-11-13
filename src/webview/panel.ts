@@ -14,6 +14,9 @@ export class ExplanationPanel implements vscode.Disposable {
   private readonly messageHandlers: ((msg: WebviewToHost) => void)[] = [];
   private readonly disposeHandlers: (() => void)[] = [];
   private disposed = false;
+  private ready = false;
+  private draining = false;
+  private startup: HostToWebview[] = [];
 
   constructor(extensionUri: vscode.Uri) {
     this.panel = vscode.window.createWebviewPanel(
@@ -27,6 +30,33 @@ export class ExplanationPanel implements vscode.Disposable {
       },
     );
 
+    // Install lifecycle listeners before assigning HTML: the client may be ready
+    // immediately, including during HTML assignment in an embedded host.
+    this.panel.webview.onDidReceiveMessage((msg: WebviewToHost) => {
+      if (this.disposed) return;
+      if (msg.type === 'ready' && !this.ready) {
+        this.ready = true;
+        this.draining = true;
+        try {
+          while (!this.disposed && this.startup.length) {
+            const next = this.startup.shift()!;
+            void this.panel.webview.postMessage(next);
+          }
+        } finally {
+          this.draining = false;
+          this.startup = [];
+        }
+      }
+      if (!this.disposed) for (const h of this.messageHandlers) h(msg);
+    });
+    this.panel.onDidDispose(() => {
+      this.disposed = true;
+      this.startup = [];
+      for (const h of this.disposeHandlers) h();
+      this.messageHandlers.length = 0;
+      this.disposeHandlers.length = 0;
+    });
+
     const nonce = makeNonce();
     const scriptUri = this.panel.webview
       .asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'panel.js'))
@@ -35,18 +65,6 @@ export class ExplanationPanel implements vscode.Disposable {
       nonce,
       cspSource: this.panel.webview.cspSource,
       scriptUri,
-    });
-
-    this.panel.webview.onDidReceiveMessage((msg: WebviewToHost) => {
-      for (const h of this.messageHandlers) {
-        h(msg);
-      }
-    });
-    this.panel.onDidDispose(() => {
-      this.disposed = true;
-      for (const h of this.disposeHandlers) {
-        h();
-      }
     });
   }
 
@@ -59,9 +77,47 @@ export class ExplanationPanel implements vscode.Disposable {
   }
 
   private post(msg: HostToWebview): void {
-    if (!this.disposed) {
-      void this.panel.webview.postMessage(msg);
+    if (this.disposed) return;
+    if (this.ready) {
+      // Reentrant posts must follow the complete earlier startup delivery.
+      if (this.draining) this.startup.push(msg);
+      else void this.panel.webview.postMessage(msg);
+      return;
     }
+    switch (msg.type) {
+      case 'render':
+      case 'busy':
+      case 'idle':
+      case 'paused':
+      case 'completed': {
+        // Terminal feedback also carries the client's stopped capability across
+        // review/render. Only busy/idle reset it; preserve that safety latch.
+        const terminal = msg.type === 'render' || msg.type === 'paused'
+          ? this.startup.filter(m => m.type === 'error' || m.type === 'conflict')
+          : [];
+        this.startup = [msg, ...terminal];
+        return;
+      }
+      case 'progress':
+        if (this.startup[0]?.type !== 'busy') return;
+        this.startup = this.startup.filter(m => m.type !== 'progress');
+        break;
+      case 'answer':
+      case 'answerError': {
+        const presentation = this.startup[0];
+        if (presentation?.type !== 'render' || !presentation.view.chat.some(c => c.id === msg.id)) return;
+        this.startup = this.startup.filter(m => !((m.type === 'answer' || m.type === 'answerError') && m.id === msg.id));
+        break;
+      }
+      case 'error':
+      case 'conflict':
+        this.startup = this.startup.filter(m => m.type !== msg.type);
+        break;
+      case 'applied':
+        // Applied is an acknowledgement only; the client never changes content.
+        return;
+    }
+    this.startup.push(msg);
   }
 
   renderStep(view: StepView): void {

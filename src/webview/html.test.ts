@@ -8,6 +8,13 @@ describe('buildPanelHtml', () => {
     scriptUri: 'https://file+.vscode-resource/dist/panel.js',
   });
 
+  it('provides a named document, main landmark and persistent narrow announcer', () => {
+    expect(html).toContain('<title>JustInTime walkthrough</title>');
+    expect(html).toContain('<main id="app"');
+    expect(html).toMatch(/<\/main>\s*<div id="announcer"[^>]*role="status"[^>]*aria-live="polite"/);
+    expect(html).not.toMatch(/id="app"[^>]*aria-live/);
+  });
+
   it('sets a strict CSP with default-src none', () => {
     expect(html).toContain("default-src 'none'");
   });

@@ -1,30 +1,23 @@
-/**
- * Persisted rollback store (design Section 6). Snapshots the pristine
- * pre-walkthrough content of every file JustInTime is about to touch, so
- * "Revert All" survives reload/crash — the flaw the pressure-test found in the
- * original in-memory-only design.
- *
- * Filesystem access is injected via SnapshotFs so the snapshot + reverse-order
- * restore logic is unit-testable with an in-memory fs; the extension supplies a
- * real fs backed by context.globalStorageUri.
- */
+import { createHash, randomUUID } from 'node:crypto';
+import * as path from 'node:path';
+import { WorkspacePaths } from './workspace-paths';
 
-/** Minimal async filesystem over absolute paths. read() returns undefined for a missing file. */
+/** Storage and workspace access are separate capabilities. Missing reads return undefined. */
 export interface SnapshotFs {
   read(path: string): Promise<string | undefined>;
   write(path: string, content: string): Promise<void>;
+  /** Replace an index using a same-directory temporary file and atomic rename. */
+  writeAtomic(path: string, content: string): Promise<void>;
   remove(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
 }
 
 interface SnapshotEntry {
-  /** Absolute path of the touched file. */
+  /** Workspace-relative in workspace journals; absolute only for the legacy constructor. */
   path: string;
-  /** Whether the file existed before the walkthrough touched it. */
   existedBefore: boolean;
-  /** Snapshot file holding the pristine content (present only when existedBefore). */
+  /** Immutable basename, never an arbitrary filesystem path. */
   snapFile?: string;
-  /** Step number that first touched this path (for reporting). */
   step: number;
 }
 
@@ -34,103 +27,140 @@ export interface RevertResult {
   errors: string[];
 }
 
-function join(...parts: string[]): string {
-  return parts.join('/').replace(/\/{2,}/g, '/');
-}
+// A host has one lane per journal, including separately constructed stores.
+// This intentionally does not promise cross-process locking.
+const lanes = new Map<string, Promise<void>>();
 
 export class RollbackStore {
   private index: SnapshotEntry[] = [];
-  private seq = 0;
   private readonly dir: string;
   private readonly indexPath: string;
+  private targetFs: SnapshotFs;
+  private paths?: WorkspacePaths;
+  private root: string | null = null;
 
-  constructor(
-    private readonly fs: SnapshotFs,
-    baseDir: string,
-    private readonly sessionId: string,
-  ) {
-    this.dir = join(baseDir, 'snapshots', this.sessionId);
-    this.indexPath = join(this.dir, 'index.json');
+  constructor(private readonly fs: SnapshotFs, baseDir: string, sessionId: string) {
+    this.dir = path.join(baseDir, 'snapshots', sessionId);
+    this.indexPath = path.join(this.dir, 'index.json');
+    this.targetFs = fs;
   }
 
-  hasSnapshots(): boolean {
-    return this.index.length > 0;
+  static async forWorkspace(
+    storageFs: SnapshotFs, baseDir: string, workspaceRoot: string, targetFs: SnapshotFs = storageFs,
+  ): Promise<RollbackStore> {
+    const paths = new WorkspacePaths(workspaceRoot);
+    const root = await paths.canonicalRoot();
+    const id = `workspace-${createHash('sha256').update(root).digest('hex')}`;
+    const store = new RollbackStore(storageFs, baseDir, id);
+    store.paths = paths;
+    store.root = root;
+    store.targetFs = targetFs;
+    await store.runExclusive(async () => {});
+    return store;
   }
 
-  /** Rebuild in-memory index from disk (call after a reload before revertAll). */
-  async load(): Promise<void> {
-    const raw = await this.fs.read(this.indexPath);
-    if (!raw) {
-      return;
-    }
-    let parsed: { order?: SnapshotEntry[] };
-    try {
-      parsed = JSON.parse(raw) as { order?: SnapshotEntry[] };
-    } catch {
-      // Corrupt index — start fresh rather than crashing Revert All.
-      this.index = [];
-      this.seq = 0;
-      return;
-    }
-    this.index = parsed.order ?? [];
-    this.seq = this.index.reduce((max, e) => {
-      const n = e.snapFile ? Number(e.snapFile.split('/').pop()!.replace('.snap', '')) : -1;
-      return Number.isFinite(n) && n > max ? n : max;
-    }, -1) + 1;
-  }
+  hasSnapshots(): boolean { return this.index.length > 0; }
 
-  /**
-   * Capture the pristine state of `absPath` before an edit is applied to it.
-   * Idempotent per path — only the FIRST touch is recorded, which is the true
-   * pre-walkthrough state.
-   */
-  async snapshotBeforeApply(step: number, absPath: string): Promise<void> {
-    if (this.index.some((e) => e.path === absPath)) {
-      return;
-    }
-    const content = await this.fs.read(absPath);
-    const existedBefore = content !== undefined;
-    let snapFile: string | undefined;
-    if (existedBefore) {
-      snapFile = join(this.dir, `${this.seq++}.snap`);
-      await this.fs.write(snapFile, content!);
-    }
-    this.index.push({ path: absPath, existedBefore, snapFile, step });
-    await this.persist();
-  }
-
-  /**
-   * Restore every touched file to its pristine state, processing in reverse
-   * touch order. Files that existed are rewritten; files created during the
-   * walkthrough are deleted.
-   */
-  async revertAll(): Promise<RevertResult> {
-    const result: RevertResult = { restored: 0, deleted: 0, errors: [] };
-    for (let i = this.index.length - 1; i >= 0; i--) {
-      const entry = this.index[i]!;
-      try {
-        if (entry.existedBefore) {
-          const content = entry.snapFile ? await this.fs.read(entry.snapFile) : undefined;
-          if (content === undefined) {
-            result.errors.push(`missing snapshot for ${entry.path}`);
-            continue;
-          }
-          await this.fs.write(entry.path, content);
-          result.restored++;
-        } else {
-          if (await this.fs.exists(entry.path)) {
-            await this.fs.remove(entry.path);
-            result.deleted++;
-          }
-        }
-      } catch (err) {
-        result.errors.push(`failed to revert ${entry.path}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
+  /** Call once around ALL snapshots and the corresponding editor mutation. Do not nest. */
+  runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = lanes.get(this.indexPath) ?? Promise.resolve();
+    const result = previous.then(async () => {
+      await this.load();
+      return operation();
+    });
+    const tail = result.then(() => {}, () => {});
+    lanes.set(this.indexPath, tail);
+    void tail.then(() => { if (lanes.get(this.indexPath) === tail) lanes.delete(this.indexPath); });
     return result;
   }
 
-  private async persist(): Promise<void> {
-    await this.fs.write(this.indexPath, JSON.stringify({ order: this.index }));
+  /** Corruption or permission failure must leave recovery evidence intact. */
+  async load(): Promise<void> {
+    if (this.paths) await this.paths.canonicalRoot();
+    const raw = await this.fs.read(this.indexPath);
+    if (raw === undefined) { this.index = []; return; }
+    let data: unknown;
+    try { data = JSON.parse(raw); } catch { throw new Error('Invalid recovery journal JSON'); }
+    if (!data || typeof data !== 'object') throw new Error('Invalid recovery journal');
+    const journal = data as { version?: unknown; root?: unknown; order?: unknown };
+    if (journal.version !== 1 || journal.root !== this.root || !Array.isArray(journal.order)) {
+      throw new Error('Invalid recovery journal version, root or entries');
+    }
+    const seen = new Set<string>();
+    for (const value of journal.order) {
+      if (!value || typeof value !== 'object') throw new Error('Invalid recovery journal entry');
+      const entry = value as SnapshotEntry;
+      if (typeof entry.path !== 'string' || !this.validStoredPath(entry.path)
+        || typeof entry.existedBefore !== 'boolean' || !Number.isSafeInteger(entry.step) || entry.step < 0
+        || (entry.existedBefore ? typeof entry.snapFile !== 'string' || !/^[a-f0-9-]+\.snap$/.test(entry.snapFile) : entry.snapFile !== undefined)
+        || seen.has(entry.path)) throw new Error('Invalid recovery journal entry');
+      seen.add(entry.path);
+    }
+    // Canonical target authorization occurs at restore time, so one newly unsafe
+    // target cannot hide other recoverable entries or prevent safe partial recovery.
+    this.index = journal.order as SnapshotEntry[];
+  }
+
+  private validStoredPath(value: string): boolean {
+    if (!value || value.includes('\0') || value.includes('\\')) return false;
+    if (!this.paths) return path.isAbsolute(value) && path.normalize(value) === value;
+    return !path.isAbsolute(value) && !path.win32.isAbsolute(value) && !/^[a-z]:/i.test(value)
+      && value !== '.' && value.split('/').every(component => component !== '..' && component !== '' && component !== '.');
+  }
+
+  /** The caller's transaction lane covers snapshot publication through apply. */
+  async snapshotBeforeApply(step: number, absPath: string): Promise<void> {
+    if (!Number.isSafeInteger(step) || step < 0) throw new Error('Invalid snapshot step');
+    const target = this.paths ? await this.paths.validateAbsolute(absPath) : absPath;
+    const storedPath = this.paths ? path.relative(this.paths.root, target).split(path.sep).join('/') : target;
+    if (!this.validStoredPath(storedPath)) throw new Error('Invalid snapshot target');
+    if (this.index.some(entry => entry.path === storedPath)) return;
+    const content = await this.targetFs.read(target);
+    const entry: SnapshotEntry = { path: storedPath, existedBefore: content !== undefined, step };
+    if (content !== undefined) {
+      entry.snapFile = `${randomUUID()}.snap`;
+      await this.fs.write(path.join(this.dir, entry.snapFile), content);
+    }
+    const next = [...this.index, entry];
+    await this.persist(next);
+    this.index = next;
+  }
+
+  /** Explicit workspace-wide recovery; failed entries survive for a later retry. */
+  revertAll(): Promise<RevertResult> {
+    return this.runExclusive(async () => {
+      const result: RevertResult = { restored: 0, deleted: 0, errors: [] };
+      for (const entry of [...this.index].reverse()) {
+        try {
+          const target = this.paths ? await this.paths.resolve(entry.path) : entry.path;
+          let deleted = false;
+          if (entry.existedBefore) {
+            const content = await this.fs.read(path.join(this.dir, entry.snapFile!));
+            if (content === undefined) throw new Error('missing snapshot');
+            // Storage reads can await; do not reuse authorization from before them.
+            if (this.paths) await this.paths.validateAbsolute(target);
+            await this.targetFs.write(target, content);
+          } else if (await this.targetFs.exists(target)) {
+            if (this.paths) await this.paths.validateAbsolute(target);
+            await this.targetFs.remove(target);
+            deleted = true;
+          }
+          const next = this.index.filter(item => item !== entry);
+          await this.persist(next);
+          this.index = next;
+          if (entry.existedBefore) result.restored++;
+          else if (deleted) result.deleted++;
+          // Retirement must be durable before removing its recovery payload.
+          if (entry.snapFile) await this.fs.remove(path.join(this.dir, entry.snapFile));
+        } catch (error) {
+          result.errors.push(`failed to revert ${entry.path}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      return result;
+    });
+  }
+
+  private persist(order: SnapshotEntry[]): Promise<void> {
+    return this.fs.writeAtomic(this.indexPath, JSON.stringify({ version: 1, root: this.root, order }));
   }
 }
